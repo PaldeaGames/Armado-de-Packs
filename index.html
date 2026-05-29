@@ -749,7 +749,7 @@ hr.divider { border: none; border-top: 1px solid var(--border); margin: 20px 0; 
   </svg>
   <div>
     <div class="logo-text">Paldea <span>Games</span></div>
-    <div class="logo-sub">Armador de Packs — Algoritmo Diego v8</div>
+    <div class="logo-sub">Armador de Packs — Algoritmo Diego v9</div>
   </div>
 </div>
 
@@ -759,7 +759,7 @@ hr.divider { border: none; border-top: 1px solid var(--border); margin: 20px 0; 
   <div class="title-block">
     <div class="section-tag">Sistema de armado</div>
     <h1>Armador<br>de Packs</h1>
-    <div class="title-sub">Sistema Pack 55 / Pack 20<br>Algoritmo Diego v8</div>
+    <div class="title-sub">Sistema Pack 55 / Pack 20<br>Algoritmo Diego v9</div>
   </div>
 
   <!-- SELECTORS -->
@@ -1072,56 +1072,72 @@ function calcular() {
 function ejecutarAlgoritmo(tipos, numPacks, objetivo) {
   estado.niveles = [];
   let residuoAnterior = 0;
-  let casoBActivo = false;
-  let casoBTipo2 = null;
-  let casoBPrestado = 0;
   let acum = new Array(numPacks + 1).fill(0);
+  const descuentos = {};        // préstamos recibidos por tipo
+  const vieneDePrestamo = new Set(); // tipos que recibieron préstamo (no aplican relleno)
 
   for (let i = 0; i < tipos.length; i++) {
     const tipo = tipos[i];
-    const esUltimo = i === tipos.length - 1;
-    let cartas = tipo.cantidad;
+    const esVenidoDePrestamo = vieneDePrestamo.has(tipo.nombre);
 
-    // Descontar prestadas si este tipo fue el tipo2 del caso B
-    if (casoBTipo2 === tipo.nombre) {
-      cartas -= casoBPrestado;
+    // cartasDisponibles = total del tipo - préstamo recibido de nivel anterior
+    const cartasDisponibles = tipo.cantidad - (descuentos[tipo.nombre] || 0);
+
+    // ── RELLENO (solo si NO viene de préstamo y hay residuo anterior) ──
+    let relleno = 0, intervaloRelleno = null;
+    if (!esVenidoDePrestamo && residuoAnterior > 0) {
+      relleno = numPacks - residuoAnterior;
+      intervaloRelleno = { desde: residuoAnterior + 1, hasta: numPacks };
     }
 
-    if (i === 0 && cartas < numPacks) {
-      // ── NIVEL 1 CASO B ──
-      const siguiente = tipos[1];
-      const prestado = numPacks - cartas;
-      casoBActivo = true;
-      casoBTipo2 = siguiente.nombre;
-      casoBPrestado = prestado;
-      estado.casoBTipo2Nombre = siguiente.nombre;
-      estado.casoBCantPrestada = prestado;
+    // cartasUtiles = cartasDisponibles - relleno
+    const cartasUtiles = cartasDisponibles - relleno;
 
-      // Intervalos caso B
+    // ── CASO B: cartasDisponibles < numPacks (sin relleno)
+    //        O: cartasUtiles < numPacks (post-relleno, ej. Psíquico en cuaderno) ──
+    // CASO B: solo cuando cartasDisponibles < numPacks (antes del relleno)
+    // Si cartasUtiles < numPacks pero cartasDisponibles >= numPacks → nivel normal con relleno
+    const necesitaPrestamo = cartasDisponibles < numPacks;
+
+    if (necesitaPrestamo && i < tipos.length - 1) {
+      const siguiente = tipos[i + 1];
+      // Packs que quedan sin carta propia
+      const propios = relleno > 0 ? cartasUtiles : cartasDisponibles;
+      const prestado = numPacks - propios;
+
+      descuentos[siguiente.nombre] = (descuentos[siguiente.nombre] || 0) + prestado;
+      vieneDePrestamo.add(siguiente.nombre);
+
+      // Intervalos: pack(1→propios)=1 propia, pack(propios+1→numPacks)=1 prestado
       const intervalos = [];
-      if (cartas > 0) intervalos.push({ letra: 'A', desde: 1, hasta: cartas, cantidad: 1, esCasoB: false });
-      intervalos.push({ letra: cartas > 0 ? 'B' : 'A', desde: cartas + 1, hasta: numPacks, cantidad: 1, esPrestado: true, prestadoDe: siguiente.nombre });
+      if (propios > 0) intervalos.push({ letra: 'A', desde: 1, hasta: propios, cantidad: 1, esRelleno: relleno > 0 && propios !== cartasDisponibles });
+      intervalos.push({ letra: propios > 0 ? 'B' : 'A', desde: propios + 1, hasta: numPacks, cantidad: 1, esPrestado: true, prestadoDe: siguiente.nombre });
 
-      // Acumulado: todos = 1
+      const acumAntes = [...acum];
       for (let p = 1; p <= numPacks; p++) acum[p] += 1;
 
-      const progresoData = [{ desde: 1, hasta: numPacks, anterior: 0, añadido: 1, nuevo: 1 }];
+      const progresoData = calcularProgreso(acumAntes, intervalos, numPacks);
+      const nivelActualVal = Math.max(...progresoData.map(r => r.nuevo));
+      const nivelMinimoVal = Math.min(...progresoData.map(r => r.nuevo));
 
       estado.niveles.push({
         indice: i + 1,
         tipo, cartas: tipo.cantidad,
-        casoB: true, prestado,
+        casoB: true,
+        casoHibrido: relleno > 0,
+        prestado,
         siguienteNombre: siguiente.nombre,
-        residuoAnterior: null,
-        relleno: null,
-        intervaloRelleno: null,
-        cartasUtiles: cartas,
+        cartasDisponibles,
+        relleno: relleno || null,
+        intervaloRelleno: intervaloRelleno || null,
+        residuoAnterior: relleno > 0 ? residuoAnterior : null,
+        cartasUtiles: propios,
         enteroActual: 1,
         residuoActual: 0,
         intervalos,
         progresoData,
-        nivelActualVal: 1,
-        nivelMinimoVal: 1,
+        nivelActualVal,
+        nivelMinimoVal,
         acumSnapshot: [...acum]
       });
 
@@ -1129,38 +1145,22 @@ function ejecutarAlgoritmo(tipos, numPacks, objetivo) {
       continue;
     }
 
-    // ── NIVELES NORMALES ──
-    let relleno = 0;
-    let intervaloRelleno = null;
-    let cartasUtiles = cartas;
+    // ── CIERRE FINAL ──
+    const faltanteTotal = (() => { let ft = 0; for (let p = 1; p <= numPacks; p++) ft += (objetivo - acum[p]); return ft; })();
+    const esCierre = i === tipos.length - 1 || cartasUtiles >= faltanteTotal;
 
-    const noCasoB = casoBActivo && tipo.nombre === estado.casoBTipo2Nombre;
-
-    if (!noCasoB && residuoAnterior > 0) {
-      relleno = numPacks - residuoAnterior;
-      cartasUtiles = cartas - relleno;
-      intervaloRelleno = { desde: residuoAnterior + 1, hasta: numPacks };
-    }
-
-    // Si es último nivel: verificar si haría superar objetivo
-    if (esUltimo) {
-      // CIERRE FINAL
-      const nivelAntesDeCierre = calcProgresoSnapshot(acum, numPacks);
-      const cierreRows = [];
-      let totalUsado = 0;
-
-      // Agrupar por faltante
+    if (esCierre) {
+      const acumAntes = calcProgresoSnapshot(acum, numPacks);
       const grupos = [];
       let gInicio = 1, gFaltante = objetivo - acum[1];
       for (let p = 2; p <= numPacks; p++) {
         const f = objetivo - acum[p];
-        if (f !== gFaltante) {
-          grupos.push({ desde: gInicio, hasta: p - 1, faltante: gFaltante });
-          gInicio = p; gFaltante = f;
-        }
+        if (f !== gFaltante) { grupos.push({ desde: gInicio, hasta: p - 1, faltante: gFaltante }); gInicio = p; gFaltante = f; }
       }
       grupos.push({ desde: gInicio, hasta: numPacks, faltante: gFaltante });
 
+      let totalUsado = 0;
+      const cierreRows = [];
       grupos.forEach(g => {
         const cant = g.hasta - g.desde + 1;
         const total = g.faltante * cant;
@@ -1168,32 +1168,25 @@ function ejecutarAlgoritmo(tipos, numPacks, objetivo) {
         cierreRows.push({ desde: g.desde, hasta: g.hasta, faltante: g.faltante, cant, total });
       });
 
-      const sobrante = tipo.cantidad - totalUsado;
-
       estado.niveles.push({
         indice: i + 1,
         tipo, cartas: tipo.cantidad,
         esCierre: true,
-        residuoAnterior: residuoAnterior,
-        relleno: relleno || null,
-        intervaloRelleno,
-        cartasUtiles,
-        acumAntes: nivelAntesDeCierre,
+        cartasDisponibles,
+        acumAntes,
         cierreRows,
         totalUsado,
-        sobrante
+        sobrante: cartasDisponibles - totalUsado
       });
-
-      // Actualizar sobrante global
       break;
     }
 
+    // ── NIVEL NORMAL ──
     const enteroActual = Math.floor(cartasUtiles / numPacks);
     const residuoActual = cartasUtiles % numPacks;
 
-    // Intervalos
     let intervalos = [];
-    if (residuoAnterior === 0 || noCasoB) {
+    if (esVenidoDePrestamo || residuoAnterior === 0) {
       if (residuoActual === 0) {
         intervalos = [{ letra: 'A', desde: 1, hasta: numPacks, cantidad: enteroActual }];
       } else {
@@ -1203,41 +1196,27 @@ function ejecutarAlgoritmo(tipos, numPacks, objetivo) {
         ];
       }
     } else if (residuoActual > residuoAnterior) {
-      // CASO 1
       intervalos = [
         { letra: 'A', desde: 1, hasta: residuoAnterior, cantidad: enteroActual + 1 },
         { letra: 'B', desde: residuoAnterior + 1, hasta: residuoActual, cantidad: enteroActual + 2, esRelleno: true },
         { letra: 'C', desde: residuoActual + 1, hasta: numPacks, cantidad: enteroActual + 1 }
       ];
     } else if (residuoActual < residuoAnterior) {
-      // CASO 2
       intervalos = [
         { letra: 'A', desde: 1, hasta: residuoActual, cantidad: enteroActual + 1 },
         { letra: 'B', desde: residuoActual + 1, hasta: residuoAnterior, cantidad: enteroActual },
         { letra: 'C', desde: residuoAnterior + 1, hasta: numPacks, cantidad: enteroActual + 1, esRelleno: true }
       ];
     } else {
-      // residuo_actual === residuo_anterior: caso no definido
-      estado.niveles.push({
-        indice: i + 1, tipo, cartas: tipo.cantidad,
-        errorCasoIgual: true,
-        residuoActual, residuoAnterior
-      });
+      estado.niveles.push({ indice: i + 1, tipo, cartas: tipo.cantidad, errorCasoIgual: true, residuoActual, residuoAnterior });
       break;
     }
 
-    // Filtrar vacíos
     intervalos = intervalos.filter(iv => iv.desde <= iv.hasta);
 
-    // Acumulado antes para progreso
     const acumAntes = [...acum];
+    intervalos.forEach(iv => { for (let p = iv.desde; p <= iv.hasta; p++) acum[p] += iv.cantidad; });
 
-    // Aplicar intervalos al acumulado
-    intervalos.forEach(iv => {
-      for (let p = iv.desde; p <= iv.hasta; p++) acum[p] += iv.cantidad;
-    });
-
-    // Calcular progreso cruzado
     const progresoData = calcularProgreso(acumAntes, intervalos, numPacks);
     const nivelActualVal = Math.max(...progresoData.map(r => r.nuevo));
     const nivelMinimoVal = Math.min(...progresoData.map(r => r.nuevo));
@@ -1245,9 +1224,10 @@ function ejecutarAlgoritmo(tipos, numPacks, objetivo) {
     estado.niveles.push({
       indice: i + 1,
       tipo, cartas: tipo.cantidad,
-      residuoAnterior: noCasoB ? 'none (CASO B)' : (residuoAnterior || 'none'),
-      relleno: (!noCasoB && relleno > 0) ? relleno : 'none',
-      intervaloRelleno: (!noCasoB && intervaloRelleno) ? intervaloRelleno : null,
+      cartasDisponibles,
+      residuoAnterior: esVenidoDePrestamo ? 'none (CASO B)' : (residuoAnterior || 'none'),
+      relleno: (!esVenidoDePrestamo && relleno > 0) ? relleno : 'none',
+      intervaloRelleno: (!esVenidoDePrestamo && intervaloRelleno) ? intervaloRelleno : null,
       cartasUtiles,
       enteroActual,
       residuoActual,
@@ -1278,32 +1258,27 @@ function calcProgresoSnapshot(acum, numPacks) {
 }
 
 function calcularProgreso(acumAntes, intervalos, numPacks) {
-  // Recopilar todos los puntos de corte
   const puntosSet = new Set([1, numPacks + 1]);
   intervalos.forEach(iv => { puntosSet.add(iv.desde); puntosSet.add(iv.hasta + 1); });
 
-  // Puntos donde acumAntes cambia
   let ultimo = acumAntes[1];
   for (let p = 2; p <= numPacks; p++) {
     if (acumAntes[p] !== ultimo) { puntosSet.add(p); ultimo = acumAntes[p]; }
   }
 
   const puntos = [...puntosSet].filter(p => p <= numPacks).sort((a, b) => a - b);
-
-  // Generar subrangos
   const filas = [];
+
   for (let pi = 0; pi < puntos.length; pi++) {
     const desde = puntos[pi];
     const hasta = pi + 1 < puntos.length ? puntos[pi + 1] - 1 : numPacks;
     if (desde > numPacks) continue;
 
     const ant = acumAntes[desde] || 0;
-    // Buscar qué intervalo aplica para este rango
     let add = 0;
     intervalos.forEach(iv => { if (iv.desde <= desde && iv.hasta >= desde) add = iv.cantidad; });
     const nuevo = ant + add;
 
-    // Consolidar con fila anterior si ant y add son iguales
     if (filas.length > 0) {
       const prev = filas[filas.length - 1];
       if (prev.anterior === ant && prev.añadido === add) { prev.hasta = hasta; continue; }
@@ -1432,12 +1407,14 @@ function renderNivel(niv) {
     ${kvAcc('cartas_utiles', niv.cartasUtiles)}
   </div>`;
 
-  // DIVISION
-  html += `<div class="block-section">
-    <div class="sec-title">División</div>
-    ${kv('entero_actual', `floor(${niv.cartasUtiles} / ${P}) = ${niv.enteroActual}`)}
-    ${kv('residuo_actual', `${niv.cartasUtiles} mod ${P} = ${niv.residuoActual}`)}
-  </div>`;
+  // DIVISION (solo si no es CASO B)
+  if (!casoB) {
+    html += `<div class="block-section">
+      <div class="sec-title">División</div>
+      ${kv('entero_actual', `floor(${niv.cartasUtiles} / ${P}) = ${niv.enteroActual}`)}
+      ${kv('residuo_actual', `${niv.cartasUtiles} mod ${P} = ${niv.residuoActual}`)}
+    </div>`;
+  }
 
   // INTERVALOS
   html += `<div class="block-section">
@@ -1602,42 +1579,33 @@ function auditarPack() {
   const p = parseInt(document.getElementById('aud-input').value);
   const P = estado.numPacks;
   if (!p || p < 1 || p > P) {
-    document.getElementById('aud-result').innerHTML = `<p style="font-family:var(--mono);font-size:12px;color:#ff4444;">Pack inválido. Rango: 1–${P}</p>`;
+    document.getElementById('aud-result').innerHTML = '<p style="font-family:var(--mono);font-size:12px;color:#ff4444;">Pack inválido. Rango: 1–' + P + '</p>';
     return;
   }
 
   const tipos = estado.tipos;
   const niveles = estado.niveles;
   const resultado = {};
-
   tipos.forEach(t => { resultado[t.nombre] = { color: t.color, cantidad: 0 }; });
 
-  // Caso B nivel 1
-  const niv1 = niveles[0];
-  if (niv1.casoB) {
-    const limiteN1 = niv1.cartasUtiles; // cartas del tipo 1
-    if (p <= limiteN1) {
-      resultado[niv1.tipo.nombre].cantidad += 1;
-    } else {
-      resultado[niv1.siguienteNombre].cantidad += 1; // metal del nivel 1
-    }
-  } else {
-    // Caso A nivel 1
-    niv1.intervalos.forEach(iv => {
-      if (p >= iv.desde && p <= iv.hasta) resultado[niv1.tipo.nombre].cantidad += iv.cantidad;
-    });
-  }
-
-  // Niveles 2 en adelante
-  for (let i = 1; i < niveles.length; i++) {
+  for (let i = 0; i < niveles.length; i++) {
     const niv = niveles[i];
+    if (niv.errorCasoIgual) continue;
+
     if (niv.esCierre) {
-      // Faltante del cierre
-      const faltante = estado.objetivo - estado.acumulado[p] + (niv.cierreRows.find(r => p >= r.desde && p <= r.hasta)?.faltante || 0);
-      // Usar cierreRows directamente
       const row = niv.cierreRows.find(r => p >= r.desde && p <= r.hasta);
       if (row) resultado[niv.tipo.nombre].cantidad += row.faltante;
-    } else if (!niv.errorCasoIgual) {
+    } else if (niv.casoB) {
+      niv.intervalos.forEach(iv => {
+        if (p >= iv.desde && p <= iv.hasta) {
+          if (iv.esPrestado) {
+            resultado[iv.prestadoDe].cantidad += iv.cantidad;
+          } else {
+            resultado[niv.tipo.nombre].cantidad += iv.cantidad;
+          }
+        }
+      });
+    } else {
       niv.intervalos.forEach(iv => {
         if (p >= iv.desde && p <= iv.hasta) resultado[niv.tipo.nombre].cantidad += iv.cantidad;
       });
