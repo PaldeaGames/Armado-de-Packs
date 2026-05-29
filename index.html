@@ -1013,25 +1013,29 @@ function parsearListado() {
     }
   });
 
-  // Ordenar inputs de menor a mayor según los valores asignados
+  // Ordenar las tarjetas de menor a mayor según los valores asignados
   if (asignados > 0) {
     const juego2 = document.getElementById('sel-juego').value;
     const tiposArr = JUEGOS[juego2].tipos;
-    // Recolectar todos los valores actuales
-    const valores = tiposArr.map((t, i) => {
+    const pares = tiposArr.map((t, i) => {
       const el = document.getElementById('inp-' + i);
-      return { idx: i, val: parseInt(el?.value || '0') || 0 };
+      return { tipo: t, origIdx: i, val: parseInt(el && el.value ? el.value : '0') || 0 };
     });
-    // Ordenar: los que tienen valor > 0 de menor a mayor, los que tienen 0 al final
-    const conValor = valores.filter(v => v.val > 0).sort((a, b) => a.val - b.val);
-    const sinValor = valores.filter(v => v.val === 0);
-    const ordenados = [...conValor, ...sinValor];
-    // Reasignar valores a los inputs en el nuevo orden
-    const valsOrdenados = ordenados.map(v => v.val);
-    tiposArr.forEach((t, i) => {
-      const el = document.getElementById('inp-' + i);
-      if (el) el.value = valsOrdenados[i] > 0 ? valsOrdenados[i] : '';
+    const conValor = pares.filter(function(p){ return p.val > 0; }).sort(function(a,b){ return a.val - b.val; });
+    const sinValor = pares.filter(function(p){ return p.val === 0; });
+    const ordenados = conValor.concat(sinValor);
+    const grid = document.getElementById('tipos-grid');
+    let html = '';
+    ordenados.forEach(function(p, i) {
+      const t = p.tipo;
+      html += '<div class="tipo-card">';
+      html += '<div class="tipo-num" style="background:' + t.color + ';color:#000">' + (i+1) + '</div>';
+      html += '<div class="tipo-dot" style="background:' + t.color + '"></div>';
+      html += '<div class="tipo-name">' + t.nombre + '</div>';
+      html += '<input class="tipo-input" type="text" inputmode="numeric" pattern="[0-9]*" placeholder="0" id="inp-' + p.origIdx + '" oninput="this.value=this.value.replace(/[^0-9]/g,\'\')" value="' + (p.val > 0 ? p.val : '') + '">';
+      html += '</div>';
     });
+    grid.innerHTML = html;
   }
 
   if (asignados > 0 && noReconocidos.length === 0) {
