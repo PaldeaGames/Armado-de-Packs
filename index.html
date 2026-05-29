@@ -1013,14 +1013,35 @@ function parsearListado() {
     }
   });
 
+  // Ordenar inputs de menor a mayor según los valores asignados
+  if (asignados > 0) {
+    const juego2 = document.getElementById('sel-juego').value;
+    const tiposArr = JUEGOS[juego2].tipos;
+    // Recolectar todos los valores actuales
+    const valores = tiposArr.map((t, i) => {
+      const el = document.getElementById('inp-' + i);
+      return { idx: i, val: parseInt(el?.value || '0') || 0 };
+    });
+    // Ordenar: los que tienen valor > 0 de menor a mayor, los que tienen 0 al final
+    const conValor = valores.filter(v => v.val > 0).sort((a, b) => a.val - b.val);
+    const sinValor = valores.filter(v => v.val === 0);
+    const ordenados = [...conValor, ...sinValor];
+    // Reasignar valores a los inputs en el nuevo orden
+    const valsOrdenados = ordenados.map(v => v.val);
+    tiposArr.forEach((t, i) => {
+      const el = document.getElementById('inp-' + i);
+      if (el) el.value = valsOrdenados[i] > 0 ? valsOrdenados[i] : '';
+    });
+  }
+
   if (asignados > 0 && noReconocidos.length === 0) {
-    fb.textContent = `✓ ${asignados} tipo${asignados > 1 ? 's' : ''} asignado${asignados > 1 ? 's' : ''}`;
+    fb.textContent = '✓ ' + asignados + ' tipo' + (asignados > 1 ? 's' : '') + ' asignado' + (asignados > 1 ? 's' : '') + ' · ordenado menor→mayor';
     fb.className = 'paste-feedback ok';
   } else if (asignados > 0) {
-    fb.textContent = `✓ ${asignados} asignados · No reconocidos: ${noReconocidos.join(', ')}`;
+    fb.textContent = '✓ ' + asignados + ' asignados · No reconocidos: ' + noReconocidos.join(', ');
     fb.className = 'paste-feedback ok';
   } else {
-    fb.textContent = `No se reconoció ningún tipo. Revisá el formato.`;
+    fb.textContent = 'No se reconoció ningún tipo. Revisá el formato.';
     fb.className = 'paste-feedback err';
   }
 }
