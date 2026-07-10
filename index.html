@@ -16,8 +16,8 @@
   --accent: #b8ff00;
   --accent2: #ffdd00;
   --text: #ffffff;
-  --text2: #777777;
-  --text3: #444444;
+  --text2: #cfcfcf;
+  --text3: #9a9a9a;
   --red: #ff4444;
   --blue: #4488ff;
   --purple: #aa44ff;
@@ -908,7 +908,7 @@ function actualizarJuego() {
       <div class="tipo-name">${t.nombre}</div>
     <input class="tipo-input" type="text" inputmode="numeric" pattern="[0-9]*"
              placeholder="0" id="inp-${i}"
-             oninput="this.value=this.value.replace(/[^0-9]/g,'')">
+             oninput="this.value=this.value.replace(/[^0-9]/g,'');sincronizarListado(${i})">
     </div>
   `).join('');
   limpiarPaste();
@@ -946,6 +946,41 @@ function resetUI() {
   document.getElementById('aud-section').classList.remove('visible');
   document.getElementById('aud-result').innerHTML = '';
   estado = { niveles: [], nivelActual: 0, numPacks: 0, objetivo: 55, acumulado: [], casoBTipo2Nombre: null, casoBCantPrestada: 0 };
+}
+
+// ─────────────────────────────────────────────
+// SINCRONIZACIÓN input → textarea del listado
+// ─────────────────────────────────────────────
+function sincronizarListado(origIdx) {
+  const pa = document.getElementById('paste-area');
+  if (!pa || !pa.value.trim()) return; // solo si hay listado pegado
+  const juego = document.getElementById('sel-juego').value;
+  const t = JUEGOS[juego].tipos[origIdx];
+  if (!t) return;
+  const el = document.getElementById('inp-' + origIdx);
+  const nuevoVal = el ? (parseInt(el.value || '0') || 0) : 0;
+
+  const normalize = s => s.toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z]/g, '');
+  const objetivo = normalize(t.nombre);
+
+  const lineas = pa.value.split('\n');
+  let reemplazado = false;
+  for (let i = 0; i < lineas.length; i++) {
+    const soloTexto = lineas[i].replace(/\d+/g, '').replace(/[:\/\-,;]/g, ' ').trim();
+    const norm = normalize(soloTexto);
+    if (norm && (norm === objetivo || norm.includes(objetivo) || objetivo.includes(norm))) {
+      // Reescribir el número de esa línea conservando el nombre y separador
+      lineas[i] = lineas[i].replace(/\d+/, String(nuevoVal));
+      if (!/\d/.test(lineas[i])) lineas[i] = t.nombre + ': ' + nuevoVal;
+      reemplazado = true;
+      break;
+    }
+  }
+  if (!reemplazado && nuevoVal > 0) {
+    lineas.push(t.nombre + ': ' + nuevoVal);
+  }
+  pa.value = lineas.join('\n');
 }
 
 // ─────────────────────────────────────────────
@@ -1032,7 +1067,7 @@ function parsearListado() {
       html += '<div class="tipo-num" style="background:' + t.color + ';color:#000">' + (i+1) + '</div>';
       html += '<div class="tipo-dot" style="background:' + t.color + '"></div>';
       html += '<div class="tipo-name">' + t.nombre + '</div>';
-      html += '<input class="tipo-input" type="text" inputmode="numeric" pattern="[0-9]*" placeholder="0" id="inp-' + p.origIdx + '" oninput="this.value=this.value.replace(/[^0-9]/g,\'\')" value="' + (p.val > 0 ? p.val : '') + '">';
+      html += '<input class="tipo-input" type="text" inputmode="numeric" pattern="[0-9]*" placeholder="0" id="inp-' + p.origIdx + '" oninput="this.value=this.value.replace(/[^0-9]/g,\'\');sincronizarListado(' + p.origIdx + ')" value="' + (p.val > 0 ? p.val : '') + '">';
       html += '</div>';
     });
     grid.innerHTML = html;
@@ -1233,8 +1268,17 @@ function ejecutarAlgoritmo(tipos, numPacks, objetivo) {
         { letra: 'C', desde: residuoAnterior + 1, hasta: numPacks, cantidad: enteroActual + 1, esRelleno: true }
       ];
     } else {
-      estado.niveles.push({ indice: i + 1, tipo, cartas: tipo.cantidad, errorCasoIgual: true, residuoActual, residuoAnterior });
-      break;
+      // ── CASO IGUAL (residuoActual === residuoAnterior) ──
+      // El escalon nuevo coincide exactamente con el previo. Como el relleno
+      // va dentro de los intervalos (igual que CASO 1/2), aqui se colapsa en
+      // un solo tramo plano: TODOS los packs reciben enteroActual+1.
+      //   pack(1..R):     ya venian +1 → conservan la ventaja
+      //   pack(R+1..np):  venian 1 abajo → el +1 los nivela (relleno)
+      // Distribuye cartasDisponibles completo y mantiene residuoActual = R.
+      intervalos = [
+        { letra: 'A', desde: 1, hasta: residuoAnterior, cantidad: enteroActual + 1 },
+        { letra: 'B', desde: residuoAnterior + 1, hasta: numPacks, cantidad: enteroActual + 1, esRelleno: true }
+      ];
     }
 
     intervalos = intervalos.filter(iv => iv.desde <= iv.hasta);
