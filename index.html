@@ -759,7 +759,7 @@ hr.divider { border: none; border-top: 1px solid var(--border); margin: 20px 0; 
   <div class="title-block">
     <div class="section-tag">Sistema de armado</div>
     <h1>Armador<br>de Packs</h1>
-    <div class="title-sub">Sistema Pack 55 / Pack 20<br>Algoritmo Diego v9</div>
+    <div class="title-sub">Sistema Pack 55 / 50 Energías / 30 / 20<br>Algoritmo Diego v9</div>
   </div>
 
   <!-- SELECTORS -->
@@ -773,8 +773,9 @@ hr.divider { border: none; border-top: 1px solid var(--border); margin: 20px 0; 
     </div>
     <div class="sel-group">
       <div class="sel-label">Pack</div>
-      <select id="sel-pack" onchange="reiniciar()">
+      <select id="sel-pack" onchange="actualizarJuego()">
         <option value="55">55 cartas</option>
+        <option value="50" id="opt-pack-50">50 energías</option>
         <option value="30">30 cartas</option>
         <option value="20">20 cartas</option>
       </select>
@@ -882,6 +883,35 @@ const JUEGOS = {
 };
 
 // ─────────────────────────────────────────────
+// SUBBLOQUE — ENERGÍAS POKÉMON (pack de 50)
+// 8 tipos fijos. Mismo algoritmo, solo cambia objetivo_pack = 50.
+// ─────────────────────────────────────────────
+const ENERGIAS_POKEMON = [
+  { nombre: 'Metal',     color: '#aaaaaa' },
+  { nombre: 'Eléctrico', color: '#ffdd00' },
+  { nombre: 'Fuego',     color: '#ff4444' },
+  { nombre: 'Lucha',     color: '#cc6644' },
+  { nombre: 'Oscuro',    color: '#9944cc' },
+  { nombre: 'Agua',      color: '#4488ff' },
+  { nombre: 'Psíquico',  color: '#ff44aa' },
+  { nombre: 'Pasto',     color: '#44ff88' },
+];
+
+// Devuelve true si estamos en el subbloque de energías (Pokémon + pack 50)
+function esModoEnergias() {
+  const juego = document.getElementById('sel-juego').value;
+  const pack  = document.getElementById('sel-pack').value;
+  return juego === 'pokemon' && pack === '50';
+}
+
+// Lista de tipos activa según juego + modo. Único punto de verdad.
+function tiposActivos() {
+  if (esModoEnergias()) return ENERGIAS_POKEMON;
+  const juego = document.getElementById('sel-juego').value;
+  return JUEGOS[juego].tipos;
+}
+
+// ─────────────────────────────────────────────
 // ESTADO GLOBAL
 // ─────────────────────────────────────────────
 let estado = {
@@ -899,7 +929,18 @@ let estado = {
 // ─────────────────────────────────────────────
 function actualizarJuego() {
   const juego = document.getElementById('sel-juego').value;
-  const tipos = JUEGOS[juego].tipos;
+  const selPack = document.getElementById('sel-pack');
+  const opt50 = document.getElementById('opt-pack-50');
+  // El pack de 50 (energías) existe solo en Pokémon
+  if (opt50) {
+    if (juego === 'pokemon') {
+      opt50.hidden = false; opt50.disabled = false;
+    } else {
+      if (selPack.value === '50') selPack.value = '55';
+      opt50.hidden = true; opt50.disabled = true;
+    }
+  }
+  const tipos = tiposActivos();
   const grid = document.getElementById('tipos-grid');
   grid.innerHTML = tipos.map((t, i) => `
     <div class="tipo-card">
@@ -916,8 +957,7 @@ function actualizarJuego() {
 }
 
 function reiniciar() {
-  const juego = document.getElementById('sel-juego').value;
-  JUEGOS[juego].tipos.forEach((_, i) => {
+  tiposActivos().forEach((_, i) => {
     const el = document.getElementById('inp-' + i);
     if (el) el.value = '';
   });
@@ -954,8 +994,7 @@ function resetUI() {
 function sincronizarListado(origIdx) {
   const pa = document.getElementById('paste-area');
   if (!pa || !pa.value.trim()) return; // solo si hay listado pegado
-  const juego = document.getElementById('sel-juego').value;
-  const t = JUEGOS[juego].tipos[origIdx];
+  const t = tiposActivos()[origIdx];
   if (!t) return;
   const el = document.getElementById('inp-' + origIdx);
   const nuevoVal = el ? (parseInt(el.value || '0') || 0) : 0;
@@ -987,8 +1026,7 @@ function sincronizarListado(origIdx) {
 // LECTURA DE INPUTS
 // ─────────────────────────────────────────────
 function leerTipos() {
-  const juego = document.getElementById('sel-juego').value;
-  return JUEGOS[juego].tipos.map((t, i) => {
+  return tiposActivos().map((t, i) => {
     const v = parseInt(document.getElementById('inp-' + i)?.value || '0') || 0;
     return { nombre: t.nombre, color: t.color, cantidad: v };
   }).filter(t => t.cantidad > 0);
@@ -1002,8 +1040,7 @@ function parsearListado() {
   const fb = document.getElementById('paste-feedback');
   if (!texto) { fb.textContent = 'El área está vacía.'; fb.className = 'paste-feedback err'; return; }
 
-  const juego = document.getElementById('sel-juego').value;
-  const tipos = JUEGOS[juego].tipos;
+  const tipos = tiposActivos();
 
   // Construir mapa de normalización: nombre normalizado → índice
   const normalize = s => s.toLowerCase()
@@ -1012,6 +1049,16 @@ function parsearListado() {
 
   const mapaIdx = {};
   tipos.forEach((t, i) => { mapaIdx[normalize(t.nombre)] = i; });
+
+  // Alias en modo energías: "Rayo" y "Electrica" apuntan a Eléctrico
+  if (esModoEnergias()) {
+    const idxElec = mapaIdx['electrico'];
+    if (idxElec !== undefined) {
+      mapaIdx['rayo'] = idxElec;
+      mapaIdx['electrica'] = idxElec;
+      mapaIdx['electric'] = idxElec;
+    }
+  }
 
   // Parsear líneas: acepta "Dragón: 36", "Dragon 36", "36 Dragon", etc.
   const lineas = texto.split(/[\n,;]+/).map(l => l.trim()).filter(Boolean);
@@ -1050,8 +1097,7 @@ function parsearListado() {
 
   // Ordenar las tarjetas de menor a mayor según los valores asignados
   if (asignados > 0) {
-    const juego2 = document.getElementById('sel-juego').value;
-    const tiposArr = JUEGOS[juego2].tipos;
+    const tiposArr = tiposActivos();
     const pares = tiposArr.map((t, i) => {
       const el = document.getElementById('inp-' + i);
       return { tipo: t, origIdx: i, val: parseInt(el && el.value ? el.value : '0') || 0 };
