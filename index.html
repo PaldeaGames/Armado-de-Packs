@@ -411,6 +411,52 @@ select:focus { outline: none; border-color: var(--accent); }
   letter-spacing: 1px;
 }
 .nivel-badge.cierre { background: var(--accent2); }
+.nivel-badge.alto { background: var(--red); color: #fff; }
+.nivel-badge.pisado { background: #3a3a3a; color: var(--text2); }
+.nivel-btn.alto { width: auto; padding: 0 10px; font-size: 9px; letter-spacing: 1px;
+  background: #1a0505; border-color: #4a1515; color: #ff6666; }
+
+/* ── ALTO / CASO ESPECIAL ── */
+.alto-box {
+  background: rgba(255,68,68,.07);
+  border: 1px solid rgba(255,68,68,.25);
+  border-radius: 9px;
+  padding: 12px 14px;
+}
+.alto-eq {
+  font-family: var(--display);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--red);
+  margin-bottom: 10px;
+}
+.alto-txt {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text2);
+  line-height: 1.75;
+}
+
+/* ── VALIDACIÓN / IGNORADOS ── */
+.val-box {
+  border-radius: 9px;
+  padding: 10px 14px;
+  margin-top: 12px;
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.7;
+  letter-spacing: .5px;
+}
+.val-box.ok { background: rgba(184,255,0,.06); border: 1px solid rgba(184,255,0,.2); color: #8fbf00; }
+.val-box.err { background: rgba(255,68,68,.07); border: 1px solid rgba(255,68,68,.25); color: #ff7777; }
+.val-box b { font-family: var(--display); font-size: 10px; letter-spacing: 1px; }
+.ign-row {
+  display: flex; align-items: center; gap: 8px;
+  font-family: var(--mono); font-size: 11px; color: var(--text2);
+  padding: 4px 0;
+}
+.ign-row .aud-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.ign-row .ign-val { margin-left: auto; color: var(--accent2); font-weight: 700; }
 .nivel-tipo-name {
   font-family: var(--display);
   font-size: 15px;
@@ -508,6 +554,7 @@ select:focus { outline: none; border-color: var(--accent); }
   border: 1px solid rgba(255,221,0,.25);
 }
 .intv-badge.prestado { background: rgba(68,136,255,.12); color: #6aabff; border-color: rgba(68,136,255,.25); }
+.intv-badge.propio { background: rgba(184,255,0,.10); color: #9fd400; border-color: rgba(184,255,0,.22); }
 
 /* ── PROGRESO ── */
 .progreso-table { width: 100%; border-collapse: collapse; }
@@ -945,7 +992,7 @@ function resetUI() {
   document.getElementById('siguiente-row').style.display = 'none';
   document.getElementById('aud-section').classList.remove('visible');
   document.getElementById('aud-result').innerHTML = '';
-  estado = { niveles: [], nivelActual: 0, numPacks: 0, objetivo: 55, acumulado: [], casoBTipo2Nombre: null, casoBCantPrestada: 0 };
+  estado = { niveles: [], nivelActual: 0, numPacks: 0, objetivo: 55, acumulado: [], casoBTipo2Nombre: null, casoBCantPrestada: 0, bloqueo: null };
 }
 
 // ─────────────────────────────────────────────
@@ -1111,12 +1158,22 @@ function calcular() {
   estado.acumulado = new Array(numPacks + 1).fill(0); // 1-indexed
 
   // Ejecutar algoritmo completo
-  ejecutarAlgoritmo(tipos, numPacks, objetivo);
+  //   objetivo 20 → motor MASTER PROMPT (CASO B unificado + corte RESIDUO_IGUAL)
+  //   objetivo 55 / 30 → motor original v9. NO MODIFICAR: el pack 55 está validado
+  //   contra la AUTOVALIDACION del Master Prompt (lote 2449, 44 packs, sobrante 29).
+  if (objetivo === 20) ejecutarAlgoritmo20(tipos, numPacks, objetivo);
+  else ejecutarAlgoritmo(tipos, numPacks, objetivo);
+
+  if (estado.niveles.length === 0) {
+    alert('El cálculo se detuvo antes del nivel 1: ' + (estado.bloqueo ? estado.bloqueo.detalle : 'sin niveles'));
+    return;
+  }
 
   // Calcular sobrante (último nivel es cierre)
   const ult = estado.niveles[estado.niveles.length - 1];
-  document.getElementById('stat-sobrante').textContent = ult.sobrante !== undefined ? ult.sobrante : '—';
-  document.getElementById('stat-sobrante').className = 'stat-val';
+  const haySobrante = ult && ult.sobrante !== undefined;
+  document.getElementById('stat-sobrante').textContent = haySobrante ? ult.sobrante : '—';
+  document.getElementById('stat-sobrante').className = haySobrante ? 'stat-val' : 'stat-val muted';
 
   // Construir nav
   construirNav();
@@ -1124,6 +1181,250 @@ function calcular() {
   // Mostrar nivel 1
   estado.nivelActual = 0;
   mostrarNivel(0);
+}
+
+// ═════════════════════════════════════════════
+// MOTOR PACK 20 — MASTER PROMPT SISTEMA_PACK_N (literal)
+// ═════════════════════════════════════════════
+// CASO B unificado: cuando cartas_disponibles no alcanza para nivelar el piso,
+// el tipo aporta todo lo que tiene y los tipos SIGUIENTES completan el piso en
+// orden, descontándose de sus totales antes de que ejecuten. Los tipos que
+// participaron del piso NO aplican relleno. residuo_actual = 0.
+//    · nivel 1     → piso = 1 carta en TODOS los packs
+//                    ("el acumulado inicial de TODOS los packs es 1 sin excepción")
+//    · nivel >= 2  → piso = relleno, pack(residuo_anterior+1 → packs)
+// CASO_ESPECIAL_RESIDUO_IGUAL → detener y consultar al usuario.
+// ═════════════════════════════════════════════
+function ejecutarAlgoritmo20(tipos, numPacks, objetivo) {
+  estado.niveles = [];
+  estado.bloqueo = null;
+  let residuoAnterior = 0;
+  const acum = new Array(numPacks + 1).fill(0);
+  const descuentos = {};
+  const sinRelleno = new Set();   // tipos que participaron de un piso
+  const aportePiso = {};
+
+  for (let i = 0; i < tipos.length; i++) {
+    const tipo = tipos[i];
+    const noAplicaRelleno = sinRelleno.has(tipo.nombre);
+    const cartasDisponibles = tipo.cantidad - (descuentos[tipo.nombre] || 0);
+
+    // ── tipo consumido íntegramente por un piso anterior ──
+    if (cartasDisponibles === 0 && noAplicaRelleno) {
+      estado.niveles.push({
+        indice: i + 1, tipo, cartas: tipo.cantidad, cartasDisponibles: 0,
+        consumidoEnPiso: true, aportePiso: aportePiso[tipo.nombre] || 0,
+        cartasUtiles: 0, enteroActual: 0, residuoActual: residuoAnterior,
+        relleno: 0, intervaloRelleno: null, intervalos: [], progresoData: [],
+        nivelActualVal: Math.max.apply(null, acum.slice(1)),
+        nivelMinimoVal: Math.min.apply(null, acum.slice(1)),
+        acumAntesArr: [...acum], acumSnapshot: [...acum]
+      });
+      continue;
+    }
+
+    const rellenoNecesario = (!noAplicaRelleno && residuoAnterior > 0) ? numPacks - residuoAnterior : 0;
+
+    // ── CASO B: el tipo no alcanza para nivelar el piso ──
+    const pisoNivel1 = i === 0 && cartasDisponibles < numPacks && tipos.length > 1;
+    const pisoRelleno = rellenoNecesario > cartasDisponibles && i < tipos.length - 1;
+
+    if (pisoNivel1 || pisoRelleno) {
+      const desdePiso = pisoNivel1 ? 1 : residuoAnterior + 1;
+      const necesita = numPacks - desdePiso + 1;
+      const tramos = [];
+      let cubierto = Math.min(cartasDisponibles, necesita);
+      tramos.push({ tipo: tipo.nombre, desde: desdePiso, hasta: desdePiso + cubierto - 1, propio: true, aporte: cubierto });
+
+      let j = i + 1;
+      while (cubierto < necesita && j < tipos.length) {
+        const tj = tipos[j];
+        const dispJ = tj.cantidad - (descuentos[tj.nombre] || 0);
+        if (dispJ <= 0) { j++; continue; }
+        const aporte = Math.min(dispJ, necesita - cubierto);
+        tramos.push({ tipo: tj.nombre, desde: desdePiso + cubierto, hasta: desdePiso + cubierto + aporte - 1, propio: false, aporte });
+        descuentos[tj.nombre] = (descuentos[tj.nombre] || 0) + aporte;
+        aportePiso[tj.nombre] = (aportePiso[tj.nombre] || 0) + aporte;
+        sinRelleno.add(tj.nombre);
+        cubierto += aporte;
+        if (aporte === dispJ) j++; else break;
+      }
+
+      if (cubierto < necesita) {
+        estado.bloqueo = { tipoError: 'PISO_INCOMPLETO', nivel: i + 1, nombre: tipo.nombre,
+          detalle: 'el piso sólo cubre ' + cubierto + ' de ' + necesita + ' packs' };
+        return;
+      }
+
+      const acumAntes = [...acum];
+      const intervalos = tramos.map((tr, k) => ({
+        letra: String.fromCharCode(65 + k), desde: tr.desde, hasta: tr.hasta, cantidad: 1,
+        esPrestado: !tr.propio, prestadoDe: tr.tipo, esRelleno: !pisoNivel1 && tr.propio
+      }));
+      intervalos.forEach(iv => { for (let p = iv.desde; p <= iv.hasta; p++) acum[p] += 1; });
+      const progresoData = calcularProgreso(acumAntes, intervalos, numPacks);
+
+      estado.niveles.push({
+        indice: i + 1, tipo, cartas: tipo.cantidad, casoB: true, casoBNivel1: pisoNivel1,
+        cartasDisponibles, cartasUtiles: tramos[0].aporte,
+        residuoAnterior: pisoNivel1 ? 0 : residuoAnterior,
+        relleno: pisoNivel1 ? 0 : rellenoNecesario,
+        intervaloRelleno: pisoNivel1 ? null : { desde: desdePiso, hasta: numPacks },
+        residuoActual: 0, intervalos, tramosPiso: tramos, progresoData,
+        nivelActualVal: Math.max.apply(null, progresoData.map(r => r.nuevo)),
+        nivelMinimoVal: Math.min.apply(null, progresoData.map(r => r.nuevo)),
+        acumAntesArr: acumAntes, acumSnapshot: [...acum]
+      });
+      residuoAnterior = 0;
+      continue;
+    }
+
+    const relleno = rellenoNecesario;
+    const intervaloRelleno = relleno > 0 ? { desde: residuoAnterior + 1, hasta: numPacks } : null;
+    const cartasUtiles = cartasDisponibles - relleno;
+
+    // ── CIERRE_FINAL ──
+    let faltanteTotal = 0;
+    for (let p = 1; p <= numPacks; p++) faltanteTotal += objetivo - acum[p];
+
+    if (i === tipos.length - 1 || cartasUtiles >= faltanteTotal) {
+      const acumAntes = calcProgresoSnapshot(acum, numPacks);
+      const grupos = [];
+      let gInicio = 1, gFaltante = objetivo - acum[1];
+      for (let p = 2; p <= numPacks; p++) {
+        const f = objetivo - acum[p];
+        if (f !== gFaltante) { grupos.push({ desde: gInicio, hasta: p - 1, faltante: gFaltante }); gInicio = p; gFaltante = f; }
+      }
+      grupos.push({ desde: gInicio, hasta: numPacks, faltante: gFaltante });
+
+      let totalUsado = 0;
+      const cierreRows = [];
+      grupos.forEach(g => {
+        const cant = g.hasta - g.desde + 1;
+        const total = g.faltante * cant;
+        totalUsado += total;
+        cierreRows.push({ desde: g.desde, hasta: g.hasta, faltante: g.faltante, cant, total });
+      });
+
+      const ignorados = tipos.slice(i + 1)
+        .map(t => ({ nombre: t.nombre, color: t.color, cantidad: t.cantidad - (descuentos[t.nombre] || 0) }))
+        .filter(t => t.cantidad > 0);
+
+      estado.niveles.push({
+        indice: i + 1, tipo, cartas: tipo.cantidad, esCierre: true, cartasDisponibles,
+        acumAntes, cierreRows, totalUsado, sobrante: cartasDisponibles - totalUsado,
+        tiposIgnorados: ignorados,
+        cartasIgnoradas: ignorados.reduce((s, t) => s + t.cantidad, 0)
+      });
+      for (let p = 1; p <= numPacks; p++) acum[p] = objetivo;
+      break;
+    }
+
+    const enteroActual = Math.floor(cartasUtiles / numPacks);
+    const residuoActual = cartasUtiles % numPacks;
+    const raEf = noAplicaRelleno ? 0 : residuoAnterior;
+
+    // ── CASO_ESPECIAL_RESIDUO_IGUAL → detener (MASTER PROMPT) ──
+    if (raEf > 0 && residuoActual === raEf) {
+      estado.niveles.push({
+        indice: i + 1, tipo, cartas: tipo.cantidad, errorCasoIgual: true,
+        cartasDisponibles, residuoAnterior: raEf, relleno, intervaloRelleno,
+        cartasUtiles, enteroActual, residuoActual,
+        acumAntesArr: [...acum], acumSnapshot: [...acum]
+      });
+      estado.bloqueo = { tipoError: 'RESIDUO_IGUAL', nivel: i + 1, nombre: tipo.nombre,
+        detalle: 'residuo_actual = residuo_anterior = ' + residuoActual };
+      return;
+    }
+
+    // ── ANALISIS DE RESIDUOS ──
+    let intervalos;
+    if (raEf === 0) {
+      intervalos = residuoActual === 0
+        ? [{ letra: 'A', desde: 1, hasta: numPacks, cantidad: enteroActual }]
+        : [{ letra: 'A', desde: 1, hasta: residuoActual, cantidad: enteroActual + 1 },
+           { letra: 'B', desde: residuoActual + 1, hasta: numPacks, cantidad: enteroActual }];
+    } else if (residuoActual > raEf) {
+      intervalos = [
+        { letra: 'A', desde: 1, hasta: raEf, cantidad: enteroActual + 1 },
+        { letra: 'B', desde: raEf + 1, hasta: residuoActual, cantidad: enteroActual + 2, esRelleno: true },
+        { letra: 'C', desde: residuoActual + 1, hasta: numPacks, cantidad: enteroActual + 1 }
+      ];
+    } else {
+      intervalos = [
+        { letra: 'A', desde: 1, hasta: residuoActual, cantidad: enteroActual + 1 },
+        { letra: 'B', desde: residuoActual + 1, hasta: raEf, cantidad: enteroActual },
+        { letra: 'C', desde: raEf + 1, hasta: numPacks, cantidad: enteroActual + 1, esRelleno: true }
+      ];
+    }
+    intervalos = intervalos.filter(iv => iv.desde <= iv.hasta && iv.cantidad > 0);
+
+    const acumAntes = [...acum];
+    intervalos.forEach(iv => { for (let p = iv.desde; p <= iv.hasta; p++) acum[p] += iv.cantidad; });
+    const progresoData = calcularProgreso(acumAntes, intervalos, numPacks);
+
+    estado.niveles.push({
+      indice: i + 1, tipo, cartas: tipo.cantidad, cartasDisponibles, noAplicaRelleno,
+      residuoAnterior: raEf, relleno, intervaloRelleno,
+      cartasUtiles, enteroActual, residuoActual, intervalos, progresoData,
+      nivelActualVal: Math.max.apply(null, progresoData.map(r => r.nuevo)),
+      nivelMinimoVal: Math.min.apply(null, progresoData.map(r => r.nuevo)),
+      acumAntesArr: acumAntes, acumSnapshot: [...acum]
+    });
+    residuoAnterior = residuoActual;
+  }
+
+  estado.acumulado = acum;
+}
+
+// ── VALIDACIÓN DURA DEL PLAN (pack 20) ──
+// Reglas del Master Prompt: todos los packs = objetivo_pack ·
+// nivel_actual − nivel_minimo siempre 0 o 1 · nunca consumir más de lo que hay.
+function validarPlan20() {
+  const P = estado.numPacks, obj = estado.objetivo;
+  const packs = new Array(P + 1).fill(0);
+  const consumo = {};
+  estado.tipos.forEach(t => consumo[t.nombre] = 0);
+
+  estado.niveles.forEach(niv => {
+    if (niv.errorCasoIgual) return;
+    if (niv.esCierre) {
+      consumo[niv.tipo.nombre] += niv.totalUsado;
+      niv.cierreRows.forEach(r => { for (let p = r.desde; p <= r.hasta; p++) packs[p] += r.faltante; });
+    } else {
+      niv.intervalos.forEach(iv => {
+        const dest = iv.esPrestado ? iv.prestadoDe : niv.tipo.nombre;
+        consumo[dest] += iv.cantidad * (iv.hasta - iv.desde + 1);
+        for (let p = iv.desde; p <= iv.hasta; p++) packs[p] += iv.cantidad;
+      });
+    }
+  });
+
+  const errores = [];
+  let packsMal = 0;
+  for (let p = 1; p <= P; p++) if (packs[p] !== obj) packsMal++;
+  if (packsMal > 0) errores.push(packsMal + ' de ' + P + ' packs no suman ' + obj);
+
+  estado.tipos.forEach(t => {
+    if (consumo[t.nombre] > t.cantidad) errores.push(t.nombre + ': el plan usa ' + consumo[t.nombre] + ' y hay ' + t.cantidad);
+  });
+
+  estado.niveles.forEach(niv => {
+    if (niv.esCierre || niv.errorCasoIgual || !niv.acumSnapshot) return;
+    const v = niv.acumSnapshot.slice(1);
+    const d = Math.max.apply(null, v) - Math.min.apply(null, v);
+    if (d > 1) errores.push('nivel_' + niv.indice + ': nivel_actual − nivel_minimo = ' + d);
+    niv.intervalos.forEach(iv => {
+      if (iv.desde < 1 || iv.hasta > P) errores.push('nivel_' + niv.indice + ': intervalo pack(' + iv.desde + ' → ' + iv.hasta + ') fuera de rango');
+    });
+  });
+
+  const ult = estado.niveles[estado.niveles.length - 1];
+  if (ult && ult.esCierre) {
+    if (ult.sobrante < 0) errores.push('sobrante negativo (' + ult.sobrante + ')');
+    if (ult.cierreRows.some(r => r.faltante < 0)) errores.push('faltante negativo en el cierre');
+  }
+  return { ok: errores.length === 0, errores, packs, consumo };
 }
 
 // ─────────────────────────────────────────────
@@ -1365,8 +1666,8 @@ function construirNav() {
   nav.innerHTML = '<span class="nivel-nav-label">Nivel</span>';
   estado.niveles.forEach((niv, i) => {
     const btn = document.createElement('button');
-    btn.className = 'nivel-btn' + (niv.esCierre ? ' cierre' : '');
-    btn.textContent = niv.esCierre ? 'CIERRE' : (i + 1);
+    btn.className = 'nivel-btn' + (niv.esCierre ? ' cierre' : '') + (niv.errorCasoIgual ? ' alto' : '');
+    btn.textContent = niv.esCierre ? 'CIERRE' : (niv.errorCasoIgual ? 'ALTO' : (i + 1));
     btn.id = 'nav-btn-' + i;
     btn.onclick = () => { estado.nivelActual = i; mostrarNivel(i); };
     nav.appendChild(btn);
@@ -1396,26 +1697,55 @@ function mostrarNivel(idx) {
   if (!niv) return;
 
   if (niv.errorCasoIgual) {
+    const P = estado.numPacks;
     display.innerHTML = `<div class="nivel-block">
       <div class="nivel-header">
-        <div class="nivel-badge">NIVEL ${niv.indice}</div>
+        <div class="nivel-badge alto">ALTO — NIVEL ${niv.indice}</div>
+        <div class="nivel-tipo-dot" style="background:${niv.tipo.color}"></div>
         <div class="nivel-tipo-name">${niv.tipo.nombre}</div>
+        <div class="nivel-total">${niv.cartas} cartas</div>
       </div>
       <div class="block-section">
-        <div class="sec-title">Error</div>
-        <p style="font-family:var(--mono);font-size:12px;color:#ff4444;line-height:1.7;">
-          CASO_ESPECIAL_RESIDUO_IGUAL detectado.<br>
-          residuo_actual = residuo_anterior = ${niv.residuoActual}<br>
-          Este caso no está definido en el algoritmo de Diego.<br>
-          Consultá al usuario antes de continuar.
-        </p>
+        <div class="sec-title">Relleno</div>
+        ${kv('residuo_anterior', niv.residuoAnterior)}
+        ${kv('relleno', niv.relleno || 'none')}
+        ${kv('intervalo_relleno', niv.intervaloRelleno ? `pack(${niv.intervaloRelleno.desde}) → (${niv.intervaloRelleno.hasta})` : 'none')}
+      </div>
+      <div class="block-section">
+        <div class="sec-title">Cartas_Utiles</div>
+        ${kvAcc('cartas_utiles', niv.cartasUtiles)}
+      </div>
+      <div class="block-section">
+        <div class="sec-title">División</div>
+        ${kv('entero_actual', `floor(${niv.cartasUtiles} / ${P}) = ${niv.enteroActual}`)}
+        ${kv('residuo_actual', `${niv.cartasUtiles} mod ${P} = ${niv.residuoActual}`)}
+      </div>
+      <div class="block-section">
+        <div class="sec-title">CASO_ESPECIAL_RESIDUO_IGUAL</div>
+        <div class="alto-box">
+          <div class="alto-eq">residuo_actual = residuo_anterior = ${niv.residuoActual}</div>
+          <p class="alto-txt">
+            Este caso no está definido en el algoritmo de Diego. El cálculo se detiene
+            en este nivel y no continúa hasta recibir tu instrucción.<br><br>
+            Las dos reglas del cuaderno cubren sólo residuo_actual &gt; residuo_anterior
+            y residuo_actual &lt; residuo_anterior. La igualdad quedó indefinida a
+            propósito para que la observes físicamente la primera vez que aparezca en
+            un lote real y definas la regla desde esa observación.<br><br>
+            Opciones: cambiá la cantidad de algún tipo para mover el residuo, o definí
+            la regla para este caso.
+          </p>
+        </div>
       </div>
     </div>`;
     document.getElementById('siguiente-row').style.display = 'none';
+    document.getElementById('aud-section').classList.remove('visible');
     return;
   }
 
-  const html = niv.esCierre ? renderCierre(niv) : renderNivel(niv);
+  const es20 = estado.objetivo === 20;
+  const html = niv.esCierre
+    ? (es20 ? renderCierre20(niv) : renderCierre(niv))
+    : (es20 ? renderNivel20(niv) : renderNivel(niv));
   display.innerHTML = html;
 
   const esUltimo = idx === estado.niveles.length - 1;
@@ -1623,6 +1953,252 @@ function renderCierre(niv) {
 
   html += `</div>`;
   return html;
+}
+
+// ═════════════════════════════════════════════
+// RENDER PACK 20 — formato del MASTER PROMPT
+// ═════════════════════════════════════════════
+function renderNivel20(niv) {
+  const P = estado.numPacks;
+  const obj = estado.objetivo;
+
+  let html = `<div class="nivel-block">`;
+
+  // ── Header ──
+  const badge = niv.consumidoEnPiso
+    ? `<div class="nivel-badge pisado">NIVEL ${niv.indice} — EN PISO</div>`
+    : `<div class="nivel-badge">NIVEL ${niv.indice}${niv.casoB ? ' — CASO B' : ''}</div>`;
+  html += `<div class="nivel-header">
+    ${badge}
+    <div class="nivel-tipo-dot" style="background:${niv.tipo.color}"></div>
+    <div class="nivel-tipo-name">${niv.tipo.nombre}</div>
+    <div class="nivel-total">${niv.cartas} cartas</div>
+  </div>`;
+
+  // ── Tipo consumido íntegramente por un piso anterior ──
+  if (niv.consumidoEnPiso) {
+    html += `<div class="block-section">
+      <div class="sec-title">Cartas_Utiles</div>
+      ${kv('cartas_totales', niv.cartas)}
+      ${kv('aporte_al_piso', niv.aportePiso)}
+      ${kvAcc('cartas_utiles', 0)}
+    </div>
+    <div class="block-section">
+      <div class="sec-title">Estado</div>
+      <p class="alto-txt">Las ${niv.cartas} cartas de ${niv.tipo.nombre} se consumieron
+      completas en el piso de CASO B. Este nivel no distribuye nada y no aplica relleno.
+      El acumulado no cambia.</p>
+    </div>`;
+    html += renderProgreso20(niv, true);
+    return html + `</div>`;
+  }
+
+  // ── RELLENO ──
+  html += `<div class="block-section">
+    <div class="sec-title">Relleno</div>`;
+  if (niv.noAplicaRelleno || (niv.casoB && niv.casoBNivel1)) {
+    const nota = niv.noAplicaRelleno ? 'none (participó del piso de CASO B)' : 'none';
+    html += kv('residuo_anterior', niv.residuoAnterior || 'none') + kv('relleno', nota) + kv('intervalo_relleno', 'none');
+  } else {
+    html += kv('residuo_anterior', niv.residuoAnterior || 'none');
+    html += kv('relleno', niv.relleno || 'none');
+    html += kv('intervalo_relleno', niv.intervaloRelleno
+      ? `pack(${niv.intervaloRelleno.desde}) → (${niv.intervaloRelleno.hasta})`
+      : 'none');
+  }
+  html += `</div>`;
+
+  // ── CARTAS_UTILES ──
+  html += `<div class="block-section">
+    <div class="sec-title">Cartas_Utiles</div>`;
+  if (niv.cartasDisponibles !== niv.cartas) {
+    html += kv('cartas_totales', niv.cartas);
+    html += kv('descontado_en_piso', niv.cartas - niv.cartasDisponibles);
+    html += kv('cartas_disponibles', niv.cartasDisponibles);
+  }
+  html += kvAcc('cartas_utiles', niv.cartasUtiles) + `</div>`;
+
+  // ── CASO B: piso ──
+  if (niv.casoB) {
+    html += `<div class="block-section">
+      <div class="sec-title">CASO B — ${niv.casoBNivel1 ? 'piso de 1 carta en todos los packs' : 'piso del relleno'}</div>
+      ${kv('residuo_actual', 0)}
+      <p class="alto-txt" style="margin:8px 0 10px;">
+        ${niv.tipo.nombre} aporta ${niv.cartasUtiles} carta${niv.cartasUtiles === 1 ? '' : 's'} y
+        ${niv.tramosPiso.length > 1 ? 'los tipos siguientes completan' : 'completa'} el piso.
+        Lo aportado se descuenta del total de cada tipo antes de que ejecute su nivel, y
+        esos tipos NO aplican relleno.
+      </p>`;
+    niv.tramosPiso.forEach(tr => {
+      html += `<div class="intervalo-row">
+        <div class="intv-rango">pack(${tr.desde} → ${tr.hasta})</div>
+        <div class="intv-cantidad">1</div>
+        <div class="intv-badge ${tr.propio ? 'propio' : 'prestado'}">${tr.propio ? tr.tipo + ' · ' + tr.aporte : 'de ' + tr.tipo + ' · ' + tr.aporte}</div>
+      </div>`;
+    });
+    html += `</div>`;
+  } else {
+    // ── DIVISION ──
+    html += `<div class="block-section">
+      <div class="sec-title">División</div>
+      ${kv('entero_actual', `floor(${niv.cartasUtiles} / ${P}) = ${niv.enteroActual}`)}
+      ${kv('residuo_actual', `${niv.cartasUtiles} mod ${P} = ${niv.residuoActual}`)}
+    </div>`;
+  }
+
+  // ── INTERVALOS ──
+  html += `<div class="block-section">
+    <div class="sec-title">Intervalos</div>`;
+  niv.intervalos.forEach(iv => {
+    html += `<div class="intervalo-row">
+      <div class="intv-letra">${iv.letra}</div>
+      <div class="intv-rango">pack(${iv.desde} → ${iv.hasta})</div>
+      <div class="intv-cantidad">${iv.cantidad}</div>
+      ${iv.esPrestado ? `<div class="intv-badge prestado">de ${iv.prestadoDe}</div>` : ''}
+      ${iv.esRelleno ? `<div class="intv-badge">relleno</div>` : ''}
+    </div>`;
+  });
+  if (niv.enteroActual === 0 && !niv.casoB) {
+    html += `<p class="alto-txt" style="margin-top:8px;">entero_actual = 0: los packs del
+    intervalo final reciben 0 cartas de ${niv.tipo.nombre}. Un pack puede no tener todos
+    los tipos siempre que llegue a ${obj} cartas al final.</p>`;
+  }
+  html += `</div>`;
+
+  html += renderProgreso20(niv, false);
+  return html + `</div>`;
+}
+
+// ── PROGRESO: estado anterior REAL + cruce (CAMBIO 3 del Master Prompt) ──
+function renderProgreso20(niv, sinCruce) {
+  const P = estado.numPacks;
+  const obj = estado.objetivo;
+
+  let html = `<div class="block-section">
+    <div class="sec-title">Progreso</div>
+    <div style="font-family:var(--mono);font-size:11px;color:var(--text3);margin-bottom:8px;">Estado anterior:</div>`;
+
+  const grupos = calcProgresoSnapshot(niv.acumAntesArr, P);
+  grupos.forEach(g => {
+    html += `<div class="intervalo-row" style="margin-bottom:4px;">
+      <div class="intv-rango">pack(${g.desde} → ${g.hasta})</div>
+      <div class="intv-cantidad" style="font-size:14px;color:var(--text3);">${g.valor}</div>
+    </div>`;
+  });
+
+  if (!sinCruce) {
+    html += `<div style="font-family:var(--mono);font-size:11px;color:var(--text3);margin:10px 0 8px;">Cruce con nivel ${niv.indice}:</div>`;
+    niv.progresoData.forEach(r => {
+      html += `<div class="intervalo-row" style="margin-bottom:6px;">
+        <div class="intv-rango">pack(${r.desde} → ${r.hasta})</div>
+        <div style="font-family:var(--mono);font-size:11px;color:var(--text3);flex:1;">${r.anterior} + ${r.añadido} =</div>
+        <div class="intv-cantidad">${r.nuevo}</div>
+      </div>`;
+    });
+  }
+
+  const d = niv.nivelActualVal - niv.nivelMinimoVal;
+  html += `<div class="progreso-summary">
+    <div class="prog-sum-box">
+      <div class="prog-sum-lbl">nivel_actual</div>
+      <div class="prog-sum-val">${niv.nivelActualVal}</div>
+      <div class="prog-fraction">${niv.nivelActualVal} / ${obj}</div>
+    </div>
+    <div class="prog-sum-box">
+      <div class="prog-sum-lbl">faltante</div>
+      <div class="prog-sum-val faltante">${obj - niv.nivelActualVal}</div>
+      <div class="prog-fraction">nivel_minimo = ${niv.nivelMinimoVal}</div>
+    </div>
+  </div>`;
+  if (d > 1) {
+    html += `<div class="val-box err"><b>ERROR DE CÁLCULO</b><br>
+      nivel_actual − nivel_minimo = ${d}. La diferencia siempre debe ser 0 o 1.</div>`;
+  }
+  return html + `</div>`;
+}
+
+// ── CIERRE_FINAL pack 20 ──
+function renderCierre20(niv) {
+  const obj = estado.objetivo;
+
+  let html = `<div class="nivel-block">`;
+  html += `<div class="nivel-header">
+    <div class="nivel-badge cierre">CIERRE_FINAL — NIVEL ${niv.indice}</div>
+    <div class="nivel-tipo-dot" style="background:${niv.tipo.color}"></div>
+    <div class="nivel-tipo-name">${niv.tipo.nombre}</div>
+    <div class="nivel-total">${niv.cartas} cartas</div>
+  </div>`;
+
+  html += `<div class="block-section">
+    <div class="sec-title">Paso 1 — Acumulado previo al cierre</div>`;
+  niv.acumAntes.forEach(g => {
+    html += `<div class="intervalo-row">
+      <div class="intv-rango">pack(${g.desde} → ${g.hasta})</div>
+      <div class="intv-cantidad" style="font-size:14px;color:var(--text2);">${g.valor}</div>
+    </div>`;
+  });
+  html += `</div>`;
+
+  html += `<div class="block-section">
+    <div class="sec-title">Paso 2-3 — Faltante y distribución</div>`;
+  niv.cierreRows.forEach(r => {
+    html += `<div class="cierre-row">
+      <div class="cierre-rango">pack(${r.desde} → ${r.hasta})</div>
+      <div class="cierre-faltante">${r.faltante}</div>
+      <div class="cierre-mult">× ${r.cant}</div>
+      <div class="cierre-total">= ${r.total}</div>
+    </div>`;
+  });
+  html += `</div>`;
+
+  html += `<div class="block-section">
+    <div class="sec-title">Paso 4 — Validación</div>
+    ${kv('total_usado', niv.totalUsado)}
+    ${kv('cartas_disponibles', niv.cartasDisponibles)}
+    ${kv('sobrante', niv.sobrante)}
+  </div>`;
+
+  html += `<div class="block-section">
+    <div class="sobrante-final-box">
+      <div>
+        <div class="sob-lbl">Sobrante final</div>
+        <div class="sob-tipo">${niv.tipo.nombre}</div>
+      </div>
+      <div class="sob-val">${niv.sobrante}</div>
+    </div>`;
+
+  // Tipos que no llegaron a entrar (maximizar uso de cartas)
+  if (niv.cartasIgnoradas > 0) {
+    html += `<div class="val-box err" style="margin-top:12px;">
+      <b>CIERRE ANTICIPADO</b><br>
+      ${niv.tipo.nombre} alcanzó para cerrar todos los packs antes del último nivel.
+      Estas cartas quedan fuera del lote:</div>`;
+    niv.tiposIgnorados.forEach(t => {
+      html += `<div class="ign-row">
+        <div class="aud-dot" style="background:${t.color || '#555'}"></div>
+        <div>${t.nombre}</div>
+        <div class="ign-val">${t.cantidad}</div>
+      </div>`;
+    });
+    html += `<div class="ign-row" style="border-top:1px solid var(--border);margin-top:4px;padding-top:6px;">
+      <div>total fuera del lote</div>
+      <div class="ign-val">${niv.cartasIgnoradas}</div>
+    </div>`;
+  }
+
+  // VALIDACIÓN REAL (no texto fijo)
+  const v = validarPlan20();
+  if (v.ok) {
+    html += `<div class="val-box ok"><b>VERIFICADO</b><br>
+      Los ${estado.numPacks} packs suman exactamente ${obj} cartas · ningún tipo se
+      consume por encima de su stock · nivel_actual − nivel_minimo nunca pasa de 1.</div>`;
+  } else {
+    html += `<div class="val-box err"><b>VALIDACIÓN FALLIDA</b><br>` +
+      v.errores.map(e => '· ' + e).join('<br>') + `</div>`;
+  }
+
+  html += `</div>`;
+  return html + `</div>`;
 }
 
 // ─────────────────────────────────────────────
