@@ -1186,13 +1186,15 @@ function calcular() {
 // ═════════════════════════════════════════════
 // MOTOR PACK 20 — MASTER PROMPT SISTEMA_PACK_N (literal)
 // ═════════════════════════════════════════════
-// CASO B unificado: cuando cartas_disponibles no alcanza para nivelar el piso,
-// el tipo aporta todo lo que tiene y los tipos SIGUIENTES completan el piso en
-// orden, descontándose de sus totales antes de que ejecuten. Los tipos que
-// participaron del piso NO aplican relleno. residuo_actual = 0.
-//    · nivel 1     → piso = 1 carta en TODOS los packs
-//                    ("el acumulado inicial de TODOS los packs es 1 sin excepción")
-//    · nivel >= 2  → piso = relleno, pack(residuo_anterior+1 → packs)
+// CASO B se dispara por su CONDICIÓN, no por el número de nivel:
+//     cartas_utiles < packs  →  el tipo no alcanza para darle 1 carta a cada pack.
+// En ese caso el tipo aporta todo lo que tiene y los tipos SIGUIENTES completan
+// la fila, descontándose de su total antes de que ejecuten su nivel. Esos tipos
+// NO aplican relleno. residuo_actual = 0 y TODOS los packs quedan iguales
+// ("el acumulado de TODOS los packs es igual sin excepción").
+//   · modo FILA    → el tipo paga el relleno y completa una fila entera de 1 carta
+//   · modo RELLENO → el tipo no alcanza ni para el relleno; los siguientes lo terminan
+// Nunca queda un pack recibiendo 0 cartas por falta de stock: si no alcanza, se presta.
 // CASO_ESPECIAL_RESIDUO_IGUAL → detener y consultar al usuario.
 // ═════════════════════════════════════════════
 function ejecutarAlgoritmo20(tipos, numPacks, objetivo) {
@@ -1200,20 +1202,21 @@ function ejecutarAlgoritmo20(tipos, numPacks, objetivo) {
   estado.bloqueo = null;
   let residuoAnterior = 0;
   const acum = new Array(numPacks + 1).fill(0);
-  const descuentos = {};
-  const sinRelleno = new Set();   // tipos que participaron de un piso
-  const aportePiso = {};
+  const descuentos = {};        // cartas que un tipo ya prestó a niveles anteriores
+  const sinRelleno = new Set(); // tipos que prestaron → NO aplican relleno
+  const prestadoPor = {};       // total prestado por tipo
 
   for (let i = 0; i < tipos.length; i++) {
     const tipo = tipos[i];
     const noAplicaRelleno = sinRelleno.has(tipo.nombre);
     const cartasDisponibles = tipo.cantidad - (descuentos[tipo.nombre] || 0);
+    const esUltimo = i === tipos.length - 1;
 
-    // ── tipo consumido íntegramente por un piso anterior ──
-    if (cartasDisponibles === 0 && noAplicaRelleno) {
+    // ── tipo consumido íntegramente prestando a niveles anteriores ──
+    if (cartasDisponibles <= 0) {
       estado.niveles.push({
         indice: i + 1, tipo, cartas: tipo.cantidad, cartasDisponibles: 0,
-        consumidoEnPiso: true, aportePiso: aportePiso[tipo.nombre] || 0,
+        consumidoEnPiso: true, aportePiso: prestadoPor[tipo.nombre] || 0,
         cartasUtiles: 0, enteroActual: 0, residuoActual: residuoAnterior,
         relleno: 0, intervaloRelleno: null, intervalos: [], progresoData: [],
         nivelActualVal: Math.max.apply(null, acum.slice(1)),
@@ -1223,63 +1226,8 @@ function ejecutarAlgoritmo20(tipos, numPacks, objetivo) {
       continue;
     }
 
-    const rellenoNecesario = (!noAplicaRelleno && residuoAnterior > 0) ? numPacks - residuoAnterior : 0;
-
-    // ── CASO B: el tipo no alcanza para nivelar el piso ──
-    const pisoNivel1 = i === 0 && cartasDisponibles < numPacks && tipos.length > 1;
-    const pisoRelleno = rellenoNecesario > cartasDisponibles && i < tipos.length - 1;
-
-    if (pisoNivel1 || pisoRelleno) {
-      const desdePiso = pisoNivel1 ? 1 : residuoAnterior + 1;
-      const necesita = numPacks - desdePiso + 1;
-      const tramos = [];
-      let cubierto = Math.min(cartasDisponibles, necesita);
-      tramos.push({ tipo: tipo.nombre, desde: desdePiso, hasta: desdePiso + cubierto - 1, propio: true, aporte: cubierto });
-
-      let j = i + 1;
-      while (cubierto < necesita && j < tipos.length) {
-        const tj = tipos[j];
-        const dispJ = tj.cantidad - (descuentos[tj.nombre] || 0);
-        if (dispJ <= 0) { j++; continue; }
-        const aporte = Math.min(dispJ, necesita - cubierto);
-        tramos.push({ tipo: tj.nombre, desde: desdePiso + cubierto, hasta: desdePiso + cubierto + aporte - 1, propio: false, aporte });
-        descuentos[tj.nombre] = (descuentos[tj.nombre] || 0) + aporte;
-        aportePiso[tj.nombre] = (aportePiso[tj.nombre] || 0) + aporte;
-        sinRelleno.add(tj.nombre);
-        cubierto += aporte;
-        if (aporte === dispJ) j++; else break;
-      }
-
-      if (cubierto < necesita) {
-        estado.bloqueo = { tipoError: 'PISO_INCOMPLETO', nivel: i + 1, nombre: tipo.nombre,
-          detalle: 'el piso sólo cubre ' + cubierto + ' de ' + necesita + ' packs' };
-        return;
-      }
-
-      const acumAntes = [...acum];
-      const intervalos = tramos.map((tr, k) => ({
-        letra: String.fromCharCode(65 + k), desde: tr.desde, hasta: tr.hasta, cantidad: 1,
-        esPrestado: !tr.propio, prestadoDe: tr.tipo, esRelleno: !pisoNivel1 && tr.propio
-      }));
-      intervalos.forEach(iv => { for (let p = iv.desde; p <= iv.hasta; p++) acum[p] += 1; });
-      const progresoData = calcularProgreso(acumAntes, intervalos, numPacks);
-
-      estado.niveles.push({
-        indice: i + 1, tipo, cartas: tipo.cantidad, casoB: true, casoBNivel1: pisoNivel1,
-        cartasDisponibles, cartasUtiles: tramos[0].aporte,
-        residuoAnterior: pisoNivel1 ? 0 : residuoAnterior,
-        relleno: pisoNivel1 ? 0 : rellenoNecesario,
-        intervaloRelleno: pisoNivel1 ? null : { desde: desdePiso, hasta: numPacks },
-        residuoActual: 0, intervalos, tramosPiso: tramos, progresoData,
-        nivelActualVal: Math.max.apply(null, progresoData.map(r => r.nuevo)),
-        nivelMinimoVal: Math.min.apply(null, progresoData.map(r => r.nuevo)),
-        acumAntesArr: acumAntes, acumSnapshot: [...acum]
-      });
-      residuoAnterior = 0;
-      continue;
-    }
-
-    const relleno = rellenoNecesario;
+    // ── RELLENO ──
+    const relleno = (!noAplicaRelleno && residuoAnterior > 0) ? numPacks - residuoAnterior : 0;
     const intervaloRelleno = relleno > 0 ? { desde: residuoAnterior + 1, hasta: numPacks } : null;
     const cartasUtiles = cartasDisponibles - relleno;
 
@@ -1287,7 +1235,7 @@ function ejecutarAlgoritmo20(tipos, numPacks, objetivo) {
     let faltanteTotal = 0;
     for (let p = 1; p <= numPacks; p++) faltanteTotal += objetivo - acum[p];
 
-    if (i === tipos.length - 1 || cartasUtiles >= faltanteTotal) {
+    if (esUltimo || cartasUtiles >= faltanteTotal) {
       const acumAntes = calcProgresoSnapshot(acum, numPacks);
       const grupos = [];
       let gInicio = 1, gFaltante = objetivo - acum[1];
@@ -1312,6 +1260,7 @@ function ejecutarAlgoritmo20(tipos, numPacks, objetivo) {
 
       estado.niveles.push({
         indice: i + 1, tipo, cartas: tipo.cantidad, esCierre: true, cartasDisponibles,
+        relleno, intervaloRelleno, residuoAnterior: noAplicaRelleno ? 0 : residuoAnterior,
         acumAntes, cierreRows, totalUsado, sobrante: cartasDisponibles - totalUsado,
         tiposIgnorados: ignorados,
         cartasIgnoradas: ignorados.reduce((s, t) => s + t.cantidad, 0)
@@ -1320,6 +1269,89 @@ function ejecutarAlgoritmo20(tipos, numPacks, objetivo) {
       break;
     }
 
+    // ═══ CASO B — cartas_utiles < packs: no alcanza 1 carta por pack ═══
+    if (cartasUtiles < numPacks) {
+      const propio = new Array(numPacks + 1).fill(0);
+      const prestadoDe = new Array(numPacks + 1).fill(null);
+      let desdePrest, modo;
+
+      if (cartasUtiles >= 0) {
+        // modo FILA: paga el relleno con lo propio y completa una fila de 1 carta
+        modo = 'fila';
+        if (relleno > 0) for (let p = residuoAnterior + 1; p <= numPacks; p++) propio[p] += 1;
+        for (let p = 1; p <= cartasUtiles; p++) propio[p] += 1;
+        desdePrest = cartasUtiles + 1;
+      } else {
+        // modo RELLENO: no alcanza ni para nivelar; los siguientes terminan el relleno
+        modo = 'relleno';
+        for (let p = residuoAnterior + 1; p <= residuoAnterior + cartasDisponibles; p++) propio[p] += 1;
+        desdePrest = residuoAnterior + cartasDisponibles + 1;
+      }
+
+      // tomar prestado de los tipos siguientes, en orden
+      const tramosPrestamo = [];
+      let p = desdePrest, j = i + 1;
+      while (p <= numPacks && j < tipos.length) {
+        const tj = tipos[j];
+        const dispJ = tj.cantidad - (descuentos[tj.nombre] || 0);
+        if (dispJ <= 0) { j++; continue; }
+        const aporte = Math.min(dispJ, numPacks - p + 1);
+        for (let q = p; q < p + aporte; q++) prestadoDe[q] = tj.nombre;
+        tramosPrestamo.push({ tipo: tj.nombre, color: tj.color, desde: p, hasta: p + aporte - 1, aporte });
+        descuentos[tj.nombre] = (descuentos[tj.nombre] || 0) + aporte;
+        prestadoPor[tj.nombre] = (prestadoPor[tj.nombre] || 0) + aporte;
+        sinRelleno.add(tj.nombre);
+        p += aporte;
+        if (aporte === dispJ) j++; else break;
+      }
+
+      if (p <= numPacks) {
+        estado.bloqueo = { tipoError: 'PRESTAMO_INCOMPLETO', nivel: i + 1, nombre: tipo.nombre,
+          detalle: 'no hay cartas suficientes en los tipos siguientes para cubrir pack(' + p + ' → ' + numPacks + ')' };
+        return;
+      }
+
+      // delta por pack y tramos homogéneos
+      const delta = new Array(numPacks + 1).fill(0);
+      for (let q = 1; q <= numPacks; q++) delta[q] = propio[q] + (prestadoDe[q] ? 1 : 0);
+
+      const grupos = [];
+      for (let q = 1; q <= numPacks; q++) {
+        const last = grupos[grupos.length - 1];
+        if (last && last.propio === propio[q] && last.prestadoDe === prestadoDe[q]) { last.hasta = q; continue; }
+        grupos.push({ desde: q, hasta: q, propio: propio[q], prestadoDe: prestadoDe[q] });
+      }
+
+      const intervalos = [];
+      let li = 0;
+      grupos.forEach(g => {
+        const letra = String.fromCharCode(65 + li++);
+        const enRelleno = relleno > 0 && g.desde > residuoAnterior;
+        if (g.propio > 0) intervalos.push({ letra, desde: g.desde, hasta: g.hasta, cantidad: g.propio, esRelleno: enRelleno });
+        if (g.prestadoDe) intervalos.push({ letra, desde: g.desde, hasta: g.hasta, cantidad: 1, esPrestado: true, prestadoDe: g.prestadoDe });
+        if (g.propio === 0 && !g.prestadoDe) intervalos.push({ letra, desde: g.desde, hasta: g.hasta, cantidad: 0 });
+      });
+
+      const acumAntes = [...acum];
+      for (let q = 1; q <= numPacks; q++) acum[q] += delta[q];
+      const progresoData = calcularProgreso20(acumAntes, delta, numPacks);
+
+      estado.niveles.push({
+        indice: i + 1, tipo, cartas: tipo.cantidad, casoB: true, modoCasoB: modo,
+        cartasDisponibles, relleno, intervaloRelleno,
+        residuoAnterior: noAplicaRelleno ? 0 : residuoAnterior, noAplicaRelleno,
+        cartasUtiles, enteroActual: 0, residuoActual: 0,
+        tramosPrestamo, prestadoTotal: tramosPrestamo.reduce((s, t) => s + t.aporte, 0),
+        intervalos, progresoData,
+        nivelActualVal: Math.max.apply(null, progresoData.map(r => r.nuevo)),
+        nivelMinimoVal: Math.min.apply(null, progresoData.map(r => r.nuevo)),
+        acumAntesArr: acumAntes, acumSnapshot: [...acum]
+      });
+      residuoAnterior = 0;
+      continue;
+    }
+
+    // ── NIVEL NORMAL ──
     const enteroActual = Math.floor(cartasUtiles / numPacks);
     const residuoActual = cartasUtiles % numPacks;
     const raEf = noAplicaRelleno ? 0 : residuoAnterior;
@@ -1359,9 +1391,12 @@ function ejecutarAlgoritmo20(tipos, numPacks, objetivo) {
     }
     intervalos = intervalos.filter(iv => iv.desde <= iv.hasta && iv.cantidad > 0);
 
+    const delta = new Array(numPacks + 1).fill(0);
+    intervalos.forEach(iv => { for (let q = iv.desde; q <= iv.hasta; q++) delta[q] += iv.cantidad; });
+
     const acumAntes = [...acum];
-    intervalos.forEach(iv => { for (let p = iv.desde; p <= iv.hasta; p++) acum[p] += iv.cantidad; });
-    const progresoData = calcularProgreso(acumAntes, intervalos, numPacks);
+    for (let q = 1; q <= numPacks; q++) acum[q] += delta[q];
+    const progresoData = calcularProgreso20(acumAntes, delta, numPacks);
 
     estado.niveles.push({
       indice: i + 1, tipo, cartas: tipo.cantidad, cartasDisponibles, noAplicaRelleno,
@@ -1375,6 +1410,20 @@ function ejecutarAlgoritmo20(tipos, numPacks, objetivo) {
   }
 
   estado.acumulado = acum;
+}
+
+// ── CRUCE DE INTERVALOS (CAMBIO 3 del Master Prompt) ──
+// Subrangos exactos cruzando el acumulado previo con lo que añade el nivel.
+// Sólo se consolidan subrangos consecutivos con el MISMO anterior Y el MISMO añadido.
+function calcularProgreso20(acumAntes, delta, numPacks) {
+  const filas = [];
+  for (let p = 1; p <= numPacks; p++) {
+    const ant = acumAntes[p], add = delta[p];
+    const last = filas[filas.length - 1];
+    if (last && last.anterior === ant && last.añadido === add) { last.hasta = p; continue; }
+    filas.push({ desde: p, hasta: p, anterior: ant, añadido: add, nuevo: ant + add });
+  }
+  return filas;
 }
 
 // ── VALIDACIÓN DURA DEL PLAN (pack 20) ──
@@ -1996,54 +2045,59 @@ function renderNivel20(niv) {
   // ── RELLENO ──
   html += `<div class="block-section">
     <div class="sec-title">Relleno</div>`;
-  if (niv.noAplicaRelleno || (niv.casoB && niv.casoBNivel1)) {
-    const nota = niv.noAplicaRelleno ? 'none (participó del piso de CASO B)' : 'none';
-    html += kv('residuo_anterior', niv.residuoAnterior || 'none') + kv('relleno', nota) + kv('intervalo_relleno', 'none');
-  } else {
-    html += kv('residuo_anterior', niv.residuoAnterior || 'none');
-    html += kv('relleno', niv.relleno || 'none');
-    html += kv('intervalo_relleno', niv.intervaloRelleno
-      ? `pack(${niv.intervaloRelleno.desde}) → (${niv.intervaloRelleno.hasta})`
-      : 'none');
-  }
+  html += kv('residuo_anterior', niv.noAplicaRelleno
+    ? 'none (prestó en CASO B)'
+    : (niv.residuoAnterior || 'none'));
+  html += kv('relleno', niv.relleno || 'none');
+  html += kv('intervalo_relleno', niv.intervaloRelleno
+    ? `pack(${niv.intervaloRelleno.desde}) → (${niv.intervaloRelleno.hasta})`
+    : 'none');
   html += `</div>`;
 
   // ── CARTAS_UTILES ──
   html += `<div class="block-section">
-    <div class="sec-title">Cartas_Utiles</div>`;
+    <div class="sec-title">Cartas_Utiles</div>
+    ${kv('cartas_totales', niv.cartas)}`;
   if (niv.cartasDisponibles !== niv.cartas) {
-    html += kv('cartas_totales', niv.cartas);
-    html += kv('descontado_en_piso', niv.cartas - niv.cartasDisponibles);
+    html += kv('prestado_a_nivel_anterior', niv.cartas - niv.cartasDisponibles);
     html += kv('cartas_disponibles', niv.cartasDisponibles);
   }
+  if (niv.relleno > 0) html += kv('− relleno', niv.relleno);
   html += kvAcc('cartas_utiles', niv.cartasUtiles) + `</div>`;
 
-  // ── CASO B: piso ──
+  // ── DIVISIÓN (siempre, como el bloque del Master Prompt) ──
+  html += `<div class="block-section">
+    <div class="sec-title">División</div>`;
   if (niv.casoB) {
+    html += kv('entero_actual', `floor(${niv.cartasUtiles} / ${P}) = 0 — no alcanza 1 carta por pack`);
+    html += kv('residuo_actual', '0 — CASO B');
+  } else {
+    html += kv('entero_actual', `floor(${niv.cartasUtiles} / ${P}) = ${niv.enteroActual}`);
+    html += kv('residuo_actual', `${niv.cartasUtiles} mod ${P} = ${niv.residuoActual}`);
+  }
+  html += `</div>`;
+
+  // ── CASO B: préstamo al tipo siguiente ──
+  if (niv.casoB) {
+    const faltan = P - Math.max(0, niv.cartasUtiles);
     html += `<div class="block-section">
-      <div class="sec-title">CASO B — ${niv.casoBNivel1 ? 'piso de 1 carta en todos los packs' : 'piso del relleno'}</div>
-      ${kv('residuo_actual', 0)}
-      <p class="alto-txt" style="margin:8px 0 10px;">
-        ${niv.tipo.nombre} aporta ${niv.cartasUtiles} carta${niv.cartasUtiles === 1 ? '' : 's'} y
-        ${niv.tramosPiso.length > 1 ? 'los tipos siguientes completan' : 'completa'} el piso.
-        Lo aportado se descuenta del total de cada tipo antes de que ejecute su nivel, y
-        esos tipos NO aplican relleno.
-      </p>`;
-    niv.tramosPiso.forEach(tr => {
+      <div class="sec-title">CASO B — ${niv.modoCasoB === 'fila' ? 'fila de 1 carta en todos los packs' : 'el relleno lo terminan los tipos siguientes'}</div>
+      <p class="alto-txt" style="margin-bottom:10px;">
+        cartas_utiles = ${niv.cartasUtiles} &lt; ${P} packs. ${niv.tipo.nombre} cubre lo que
+        puede y los tipos siguientes prestan ${niv.prestadoTotal} carta${niv.prestadoTotal === 1 ? '' : 's'}
+        para que NINGÚN pack quede sin carta en este nivel. Lo prestado se descuenta del total
+        de cada tipo antes de que ejecute su nivel, y esos tipos NO aplican relleno.
+      </p>
+      ${kv('cartas_propias', Math.max(0, niv.cartasUtiles))}
+      ${kv('cartas_prestadas', niv.prestadoTotal)}`;
+    niv.tramosPrestamo.forEach(tr => {
       html += `<div class="intervalo-row">
         <div class="intv-rango">pack(${tr.desde} → ${tr.hasta})</div>
         <div class="intv-cantidad">1</div>
-        <div class="intv-badge ${tr.propio ? 'propio' : 'prestado'}">${tr.propio ? tr.tipo + ' · ' + tr.aporte : 'de ' + tr.tipo + ' · ' + tr.aporte}</div>
+        <div class="intv-badge prestado">de ${tr.tipo} · ${tr.aporte}</div>
       </div>`;
     });
     html += `</div>`;
-  } else {
-    // ── DIVISION ──
-    html += `<div class="block-section">
-      <div class="sec-title">División</div>
-      ${kv('entero_actual', `floor(${niv.cartasUtiles} / ${P}) = ${niv.enteroActual}`)}
-      ${kv('residuo_actual', `${niv.cartasUtiles} mod ${P} = ${niv.residuoActual}`)}
-    </div>`;
   }
 
   // ── INTERVALOS ──
@@ -2058,10 +2112,10 @@ function renderNivel20(niv) {
       ${iv.esRelleno ? `<div class="intv-badge">relleno</div>` : ''}
     </div>`;
   });
-  if (niv.enteroActual === 0 && !niv.casoB) {
-    html += `<p class="alto-txt" style="margin-top:8px;">entero_actual = 0: los packs del
-    intervalo final reciben 0 cartas de ${niv.tipo.nombre}. Un pack puede no tener todos
-    los tipos siempre que llegue a ${obj} cartas al final.</p>`;
+  if (niv.casoB && niv.modoCasoB === 'relleno' && niv.residuoAnterior > 0) {
+    html += `<p class="alto-txt" style="margin-top:8px;">pack(1 → ${niv.residuoAnterior})
+    recibe 0: esos packs ya venían arriba y este nivel sólo nivela el piso. Al cerrar el
+    nivel todos los packs quedan iguales.</p>`;
   }
   html += `</div>`;
 
