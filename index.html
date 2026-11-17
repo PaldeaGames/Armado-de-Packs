@@ -133,6 +133,17 @@ select {
 }
 select:focus { outline: none; border-color: var(--accent); }
 #sel-juego { border-color: #4a4a00; color: var(--accent2); }
+.modo-hint-group { flex: 1 1 auto; min-width: 0; }
+.modo-hint {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: .5px;
+  color: var(--text2);
+  padding: 9px 0 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 /* ── TIPOS GRID ── */
 .tipos-label {
@@ -806,7 +817,7 @@ hr.divider { border: none; border-top: 1px solid var(--border); margin: 20px 0; 
   <div class="title-block">
     <div class="section-tag">Sistema de armado</div>
     <h1>Armador<br>de Packs</h1>
-    <div class="title-sub">Sistema Pack 55 / Pack 20<br>Algoritmo Diego v9</div>
+    <div class="title-sub">Pack 55 / Pack 20 / 50 energías<br>Algoritmo Diego v9</div>
   </div>
 
   <!-- SELECTORS -->
@@ -820,11 +831,16 @@ hr.divider { border: none; border-top: 1px solid var(--border); margin: 20px 0; 
     </div>
     <div class="sel-group">
       <div class="sel-label">Pack</div>
-      <select id="sel-pack" onchange="reiniciar()">
+      <select id="sel-pack" onchange="actualizarPack()">
         <option value="55">55 cartas</option>
         <option value="30">30 cartas</option>
         <option value="20">20 cartas</option>
+        <option value="50">50 energías</option>
       </select>
+    </div>
+    <div class="sel-group modo-hint-group">
+      <div class="sel-label">Modo</div>
+      <div id="modo-hint" class="modo-hint">—</div>
     </div>
   </div>
 
@@ -914,7 +930,20 @@ const JUEGOS = {
       { nombre: 'Agua',     color: '#4488ff' },
       { nombre: 'Pasto',    color: '#44ff88' },
       { nombre: 'Psíquico', color: '#ff44aa' },
-    ]
+    ],
+    // Packs de energías: sólo 8 tipos (no existen energías básicas de Dragón ni Incoloro)
+    tiposPorPack: {
+      50: [
+        { nombre: 'Rayo',     color: '#ffdd00' },
+        { nombre: 'Lucha',    color: '#cc6644' },
+        { nombre: 'Fuego',    color: '#ff4444' },
+        { nombre: 'Oscuro',   color: '#9944cc' },
+        { nombre: 'Metal',    color: '#aaaaaa' },
+        { nombre: 'Pasto',    color: '#44ff88' },
+        { nombre: 'Agua',     color: '#4488ff' },
+        { nombre: 'Psíquico', color: '#ff44aa' },
+      ]
+    }
   },
   onepiece: {
     tipos: [
@@ -942,11 +971,55 @@ let estado = {
 };
 
 // ─────────────────────────────────────────────
+// MODOS — qué tipos y qué motor usa cada pack
+// ─────────────────────────────────────────────
+// Los packs de 20 y de 50 usan el motor literal del MASTER PROMPT.
+// Los de 55 y 30 siguen con el motor original v9, intacto.
+function usaMotorMP(objetivo) {
+  return objetivo === 20 || objetivo === 50;
+}
+
+// Lista de tipos vigente: depende del juego y del tamaño de pack.
+// pokemon + 50 → las 8 energías; cualquier otro caso → los tipos del juego.
+function tiposActuales() {
+  const juego = document.getElementById('sel-juego').value;
+  const objetivo = parseInt(document.getElementById('sel-pack').value);
+  const cfg = JUEGOS[juego];
+  if (cfg.tiposPorPack && cfg.tiposPorPack[objetivo]) return cfg.tiposPorPack[objetivo];
+  return cfg.tipos;
+}
+
+// El menú de packs cambia según el juego: "50 energías" es sólo de Pokémon.
+function actualizarOpcionesPack() {
+  const juego = document.getElementById('sel-juego').value;
+  const sel = document.getElementById('sel-pack');
+  const op50 = sel.querySelector('option[value="50"]');
+  const permite50 = !!(JUEGOS[juego].tiposPorPack && JUEGOS[juego].tiposPorPack[50]);
+  if (op50) {
+    op50.hidden = !permite50;
+    op50.disabled = !permite50;
+    if (!permite50 && sel.value === '50') sel.value = '55';
+  }
+}
+
+// ─────────────────────────────────────────────
 // UI — JUEGO
 // ─────────────────────────────────────────────
 function actualizarJuego() {
-  const juego = document.getElementById('sel-juego').value;
-  const tipos = JUEGOS[juego].tipos;
+  actualizarOpcionesPack();
+  actualizarPack();
+}
+
+// Rebuild del grid al cambiar el tamaño de pack: el set de tipos puede cambiar.
+function actualizarPack() {
+  const tipos = tiposActuales();
+  const objetivo = parseInt(document.getElementById('sel-pack').value);
+  const hint = document.getElementById('modo-hint');
+  if (hint) {
+    hint.textContent = objetivo === 50
+      ? '8 tipos de energía · packs de 50'
+      : tipos.length + ' tipos · packs de ' + objetivo;
+  }
   const grid = document.getElementById('tipos-grid');
   grid.innerHTML = tipos.map((t, i) => `
     <div class="tipo-card">
@@ -963,8 +1036,7 @@ function actualizarJuego() {
 }
 
 function reiniciar() {
-  const juego = document.getElementById('sel-juego').value;
-  JUEGOS[juego].tipos.forEach((_, i) => {
+  tiposActuales().forEach((_, i) => {
     const el = document.getElementById('inp-' + i);
     if (el) el.value = '';
   });
@@ -1001,8 +1073,7 @@ function resetUI() {
 function sincronizarListado(origIdx) {
   const pa = document.getElementById('paste-area');
   if (!pa || !pa.value.trim()) return; // solo si hay listado pegado
-  const juego = document.getElementById('sel-juego').value;
-  const t = JUEGOS[juego].tipos[origIdx];
+  const t = tiposActuales()[origIdx];
   if (!t) return;
   const el = document.getElementById('inp-' + origIdx);
   const nuevoVal = el ? (parseInt(el.value || '0') || 0) : 0;
@@ -1034,8 +1105,7 @@ function sincronizarListado(origIdx) {
 // LECTURA DE INPUTS
 // ─────────────────────────────────────────────
 function leerTipos() {
-  const juego = document.getElementById('sel-juego').value;
-  return JUEGOS[juego].tipos.map((t, i) => {
+  return tiposActuales().map((t, i) => {
     const v = parseInt(document.getElementById('inp-' + i)?.value || '0') || 0;
     return { nombre: t.nombre, color: t.color, cantidad: v };
   }).filter(t => t.cantidad > 0);
@@ -1049,8 +1119,7 @@ function parsearListado() {
   const fb = document.getElementById('paste-feedback');
   if (!texto) { fb.textContent = 'El área está vacía.'; fb.className = 'paste-feedback err'; return; }
 
-  const juego = document.getElementById('sel-juego').value;
-  const tipos = JUEGOS[juego].tipos;
+  const tipos = tiposActuales();
 
   // Construir mapa de normalización: nombre normalizado → índice
   const normalize = s => s.toLowerCase()
@@ -1097,8 +1166,7 @@ function parsearListado() {
 
   // Ordenar las tarjetas de menor a mayor según los valores asignados
   if (asignados > 0) {
-    const juego2 = document.getElementById('sel-juego').value;
-    const tiposArr = JUEGOS[juego2].tipos;
+    const tiposArr = tiposActuales();
     const pares = tiposArr.map((t, i) => {
       const el = document.getElementById('inp-' + i);
       return { tipo: t, origIdx: i, val: parseInt(el && el.value ? el.value : '0') || 0 };
@@ -1161,7 +1229,7 @@ function calcular() {
   //   objetivo 20 → motor MASTER PROMPT (CASO B unificado + corte RESIDUO_IGUAL)
   //   objetivo 55 / 30 → motor original v9. NO MODIFICAR: el pack 55 está validado
   //   contra la AUTOVALIDACION del Master Prompt (lote 2449, 44 packs, sobrante 29).
-  if (objetivo === 20) ejecutarAlgoritmo20(tipos, numPacks, objetivo);
+  if (usaMotorMP(objetivo)) ejecutarAlgoritmoMP(tipos, numPacks, objetivo);
   else ejecutarAlgoritmo(tipos, numPacks, objetivo);
 
   if (estado.niveles.length === 0) {
@@ -1197,7 +1265,7 @@ function calcular() {
 // Nunca queda un pack recibiendo 0 cartas por falta de stock: si no alcanza, se presta.
 // CASO_ESPECIAL_RESIDUO_IGUAL → detener y consultar al usuario.
 // ═════════════════════════════════════════════
-function ejecutarAlgoritmo20(tipos, numPacks, objetivo) {
+function ejecutarAlgoritmoMP(tipos, numPacks, objetivo) {
   estado.niveles = [];
   estado.bloqueo = null;
   let residuoAnterior = 0;
@@ -1334,7 +1402,7 @@ function ejecutarAlgoritmo20(tipos, numPacks, objetivo) {
 
       const acumAntes = [...acum];
       for (let q = 1; q <= numPacks; q++) acum[q] += delta[q];
-      const progresoData = calcularProgreso20(acumAntes, delta, numPacks);
+      const progresoData = calcularProgresoMP(acumAntes, delta, numPacks);
 
       estado.niveles.push({
         indice: i + 1, tipo, cartas: tipo.cantidad, casoB: true, modoCasoB: modo,
@@ -1396,7 +1464,7 @@ function ejecutarAlgoritmo20(tipos, numPacks, objetivo) {
 
     const acumAntes = [...acum];
     for (let q = 1; q <= numPacks; q++) acum[q] += delta[q];
-    const progresoData = calcularProgreso20(acumAntes, delta, numPacks);
+    const progresoData = calcularProgresoMP(acumAntes, delta, numPacks);
 
     estado.niveles.push({
       indice: i + 1, tipo, cartas: tipo.cantidad, cartasDisponibles, noAplicaRelleno,
@@ -1415,7 +1483,7 @@ function ejecutarAlgoritmo20(tipos, numPacks, objetivo) {
 // ── CRUCE DE INTERVALOS (CAMBIO 3 del Master Prompt) ──
 // Subrangos exactos cruzando el acumulado previo con lo que añade el nivel.
 // Sólo se consolidan subrangos consecutivos con el MISMO anterior Y el MISMO añadido.
-function calcularProgreso20(acumAntes, delta, numPacks) {
+function calcularProgresoMP(acumAntes, delta, numPacks) {
   const filas = [];
   for (let p = 1; p <= numPacks; p++) {
     const ant = acumAntes[p], add = delta[p];
@@ -1429,7 +1497,7 @@ function calcularProgreso20(acumAntes, delta, numPacks) {
 // ── VALIDACIÓN DURA DEL PLAN (pack 20) ──
 // Reglas del Master Prompt: todos los packs = objetivo_pack ·
 // nivel_actual − nivel_minimo siempre 0 o 1 · nunca consumir más de lo que hay.
-function validarPlan20() {
+function validarPlanMP() {
   const P = estado.numPacks, obj = estado.objetivo;
   const packs = new Array(P + 1).fill(0);
   const consumo = {};
@@ -1791,10 +1859,10 @@ function mostrarNivel(idx) {
     return;
   }
 
-  const es20 = estado.objetivo === 20;
+  const esMP = usaMotorMP(estado.objetivo);
   const html = niv.esCierre
-    ? (es20 ? renderCierre20(niv) : renderCierre(niv))
-    : (es20 ? renderNivel20(niv) : renderNivel(niv));
+    ? (esMP ? renderCierreMP(niv) : renderCierre(niv))
+    : (esMP ? renderNivelMP(niv) : renderNivel(niv));
   display.innerHTML = html;
 
   const esUltimo = idx === estado.niveles.length - 1;
@@ -2007,7 +2075,7 @@ function renderCierre(niv) {
 // ═════════════════════════════════════════════
 // RENDER PACK 20 — formato del MASTER PROMPT
 // ═════════════════════════════════════════════
-function renderNivel20(niv) {
+function renderNivelMP(niv) {
   const P = estado.numPacks;
   const obj = estado.objetivo;
 
@@ -2038,7 +2106,7 @@ function renderNivel20(niv) {
       completas en el piso de CASO B. Este nivel no distribuye nada y no aplica relleno.
       El acumulado no cambia.</p>
     </div>`;
-    html += renderProgreso20(niv, true);
+    html += renderProgresoMP(niv, true);
     return html + `</div>`;
   }
 
@@ -2119,12 +2187,12 @@ function renderNivel20(niv) {
   }
   html += `</div>`;
 
-  html += renderProgreso20(niv, false);
+  html += renderProgresoMP(niv, false);
   return html + `</div>`;
 }
 
 // ── PROGRESO: estado anterior REAL + cruce (CAMBIO 3 del Master Prompt) ──
-function renderProgreso20(niv, sinCruce) {
+function renderProgresoMP(niv, sinCruce) {
   const P = estado.numPacks;
   const obj = estado.objetivo;
 
@@ -2172,7 +2240,7 @@ function renderProgreso20(niv, sinCruce) {
 }
 
 // ── CIERRE_FINAL pack 20 ──
-function renderCierre20(niv) {
+function renderCierreMP(niv) {
   const obj = estado.objetivo;
 
   let html = `<div class="nivel-block">`;
@@ -2241,7 +2309,7 @@ function renderCierre20(niv) {
   }
 
   // VALIDACIÓN REAL (no texto fijo)
-  const v = validarPlan20();
+  const v = validarPlanMP();
   if (v.ok) {
     html += `<div class="val-box ok"><b>VERIFICADO</b><br>
       Los ${estado.numPacks} packs suman exactamente ${obj} cartas · ningún tipo se
